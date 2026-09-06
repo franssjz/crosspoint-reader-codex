@@ -36,7 +36,7 @@ class Epub {
   bool parseTocNavFile() const;
   void discoverCssFilesFromZip();
   bool generateThumbBmpToPath(int width, int height, const std::string& thumbPath) const;
-  void parseCssFiles() const;
+  CssParser::ParseResult parseCssFiles(CssParser::CacheStatus existingCacheStatus) const;
 
  public:
   explicit Epub(std::string filepath, const std::string& cacheDir) : filepath(std::move(filepath)) {
@@ -64,8 +64,8 @@ class Epub {
                                    bool trailingNullByte = false) const;
   bool readItemContentsToStream(const std::string& itemHref, Print& out, size_t chunkSize,
                                 bool allowEarlyStop = false) const;
-  bool readItemPrefixToBuffer(const std::string& itemHref, uint8_t* out, size_t maxBytes, size_t* bytesRead,
-                              size_t chunkSize) const;
+  // Extract an item to a file on SD. On failure the partial file is removed.
+  bool extractItemToFile(const std::string& itemHref, const std::string& destPath) const;
   bool getItemSize(const std::string& itemHref, size_t* size) const;
   BookMetadataCache::SpineEntry getSpineItem(int spineIndex) const;
   BookMetadataCache::TocEntry getTocItem(int tocIndex) const;

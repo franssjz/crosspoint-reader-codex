@@ -4,6 +4,7 @@
 #include <HalClock.h>
 #include <I18n.h>
 
+#include <cstring>
 #include <memory>
 
 #include "ClockSyncActivity.h"
@@ -13,9 +14,13 @@
 #include "fontIds.h"
 #include "util/TimeUtils.h"
 
+namespace fui = freeink::ui;
+
 namespace {
 // Menu items in their natural order. Clock entries are appended only when the
-// DS3231 RTC is present so X4 devices don't see them at all.
+// DS3231 RTC is present so X4 devices don't see them at all. The clock's UTC
+// offset is not a row here: the fork drives it from the unified time zone
+// setting (Settings > Apps > Time zone), so clockUtcOffsetQ is migration-only.
 enum MenuItem {
   ITEM_CHAPTER_PAGE_COUNT = 0,
   ITEM_BOOK_PROGRESS_PERCENTAGE,
@@ -24,14 +29,16 @@ enum MenuItem {
   ITEM_TITLE,
   ITEM_BATTERY,
   ITEM_XTC_STATUS_BAR,
-  ITEM_CLOCK,        // X3 only
-  ITEM_CLOCK_FORMAT, // X3 only
-  ITEM_CLOCK_SYNC,   // X3 only, launches ClockSyncActivity
+  ITEM_CLOCK,         // X3 only
+  ITEM_CLOCK_FORMAT,  // X3 only
+  ITEM_CLOCK_SYNC,    // X3 only, launches ClockSyncActivity
   ITEM_COUNT
 };
 
 constexpr int BASE_MENU_ITEMS = ITEM_CLOCK;  // Items shown on every device
 constexpr int FULL_MENU_ITEMS = ITEM_COUNT;  // Items shown when RTC is available
+static_assert(FULL_MENU_ITEMS == StatusBarSettingsActivity::MAX_STATUS_BAR_ITEMS,
+              "keep StatusBarSettingsActivity::MAX_STATUS_BAR_ITEMS in sync with ITEM_COUNT");
 
 const StrId menuNames[FULL_MENU_ITEMS] = {
     StrId::STR_CHAPTER_PAGE_COUNT,
@@ -62,6 +69,8 @@ const StrId titleNames[TITLE_ITEMS] = {StrId::STR_BOOK, StrId::STR_CHAPTER, StrI
 constexpr int XTC_STATUS_BAR_ITEMS = 3;
 const StrId xtcStatusBarNames[XTC_STATUS_BAR_ITEMS] = {StrId::STR_HIDE, StrId::STR_BOTTOM, StrId::STR_TOP};
 
+// Clock placement cycles Hide -> Left -> Right (the fork's order); the popup
+// lists the same three in that order and maps back through CLOCK_CYCLE.
 constexpr int CLOCK_ITEMS = 3;
 const StrId clockNames[CLOCK_ITEMS] = {StrId::STR_HIDE, StrId::STR_DIR_LEFT, StrId::STR_DIR_RIGHT};
 constexpr uint8_t CLOCK_CYCLE[CLOCK_ITEMS] = {CrossPointSettings::STATUS_BAR_CLOCK_HIDE,
@@ -77,14 +86,26 @@ int clockCycleIndex(const uint8_t mode) {
   return 0;
 }
 
-const int verticalPreviewPadding = 50;
+// Enabling the clock pulls the RTC time into the system clock right away so the
+// status bar shows the right time without waiting for the next periodic apply.
+void applyStatusBarClockMode(const uint8_t newMode) {
+  const bool wasEnabled = SETTINGS.statusBarClock != CrossPointSettings::STATUS_BAR_CLOCK_HIDE;
+  SETTINGS.statusBarClock = newMode;
+  const bool isEnabled = SETTINGS.statusBarClock != CrossPointSettings::STATUS_BAR_CLOCK_HIDE;
+  if (!wasEnabled && isEnabled && halClock.isAvailable() && SETTINGS.clockHasBeenSynced) {
+    TimeUtils::applySystemClockFromRtc(true);
+  }
+}
+
 const int verticalPreviewTextPadding = 40;
 }  // namespace
 
-void StatusBarSettingsActivity::onEnter() {
-  Activity::onEnter();
+StatusBarSettingsActivity::StatusBarSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
+    : UiListActivity("StatusBarSettings", renderer, mappedInput) {}
 
-  selectedIndex = 0;
+void StatusBarSettingsActivity::onEnter() {
+  UiListActivity::onEnter();
+
   visibleItemCount = halClock.isAvailable() ? FULL_MENU_ITEMS : BASE_MENU_ITEMS;
 
   // Clamp statusBarProgressBar and statusBarTitle in case of corrupt/migrated data
@@ -92,8 +113,8 @@ void StatusBarSettingsActivity::onEnter() {
     SETTINGS.statusBarProgressBar = CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS;
   }
 
-  if (SETTINGS.statusBarTitle >= PROGRESS_BAR_THICKNESS_ITEMS) {
-    SETTINGS.statusBarTitle = CrossPointSettings::STATUS_BAR_PROGRESS_BAR_THICKNESS::PROGRESS_BAR_NORMAL;
+  if (SETTINGS.statusBarProgressBarThickness >= PROGRESS_BAR_THICKNESS_ITEMS) {
+    SETTINGS.statusBarProgressBarThickness = CrossPointSettings::STATUS_BAR_PROGRESS_BAR_THICKNESS::PROGRESS_BAR_NORMAL;
   }
 
   if (SETTINGS.statusBarTitle >= TITLE_ITEMS) {
@@ -112,47 +133,30 @@ void StatusBarSettingsActivity::onEnter() {
     SETTINGS.statusBarClock = CrossPointSettings::STATUS_BAR_CLOCK_HIDE;
   }
 
+  // Labels never change (unlike the values, which track live SETTINGS
+  // state), so they're set once here rather than every buildScreen() call.
+  for (int i = 0; i < visibleItemCount; i++) {
+    rowItems_[i].label = I18N.get(menuNames[i]);
+    rowItems_[i].actionValue = static_cast<int16_t>(i);
+  }
+}
+
+bool StatusBarSettingsActivity::handleCustomInput() {
+  return optionPopup.handleInput(mappedInput, [this] { requestUpdate(); });
+}
+
+void StatusBarSettingsActivity::activateIndex(const int index) {
+  if (optionPopup.isActive()) return;
+  nav.selected = index;
+  // Activation opens a popup/sub-activity or repaints a new value; a lingering
+  // flash would gray an unrelated row.
+  app.clearTapFlash();
+  handleSelection();
   requestUpdate();
 }
 
-void StatusBarSettingsActivity::onExit() { Activity::onExit(); }
-
-void StatusBarSettingsActivity::loop() {
-  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    finish();
-    return;
-  }
-
-  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-    handleSelection();
-    requestUpdate();
-    return;
-  }
-
-  // Handle navigation
-  buttonNavigator.onNextRelease([this] {
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, visibleItemCount);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousRelease([this] {
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, visibleItemCount);
-    requestUpdate();
-  });
-
-  buttonNavigator.onNextContinuous([this] {
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, visibleItemCount);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousContinuous([this] {
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, visibleItemCount);
-    requestUpdate();
-  });
-}
-
 void StatusBarSettingsActivity::handleSelection() {
-  switch (selectedIndex) {
+  switch (nav.selected) {
     case ITEM_CHAPTER_PAGE_COUNT:
       SETTINGS.statusBarChapterPageCount = (SETTINGS.statusBarChapterPageCount + 1) % 2;
       break;
@@ -160,32 +164,43 @@ void StatusBarSettingsActivity::handleSelection() {
       SETTINGS.statusBarBookProgressPercentage = (SETTINGS.statusBarBookProgressPercentage + 1) % 2;
       break;
     case ITEM_PROGRESS_BAR:
-      SETTINGS.statusBarProgressBar = (SETTINGS.statusBarProgressBar + 1) % PROGRESS_BAR_ITEMS;
-      break;
+      optionPopup.show(StrId::STR_PROGRESS_BAR, progressBarNames, PROGRESS_BAR_ITEMS, SETTINGS.statusBarProgressBar,
+                       [this](int idx) {
+                         SETTINGS.statusBarProgressBar = idx;
+                         SETTINGS.saveToFile();
+                       });
+      return;
     case ITEM_PROGRESS_BAR_THICKNESS:
-      SETTINGS.statusBarProgressBarThickness =
-          (SETTINGS.statusBarProgressBarThickness + 1) % PROGRESS_BAR_THICKNESS_ITEMS;
-      break;
+      optionPopup.show(StrId::STR_PROGRESS_BAR_THICKNESS, progressBarThicknessNames, PROGRESS_BAR_THICKNESS_ITEMS,
+                       SETTINGS.statusBarProgressBarThickness, [this](int idx) {
+                         SETTINGS.statusBarProgressBarThickness = idx;
+                         SETTINGS.saveToFile();
+                       });
+      return;
     case ITEM_TITLE:
-      SETTINGS.statusBarTitle = (SETTINGS.statusBarTitle + 1) % TITLE_ITEMS;
-      break;
+      optionPopup.show(StrId::STR_TITLE, titleNames, TITLE_ITEMS, SETTINGS.statusBarTitle, [this](int idx) {
+        SETTINGS.statusBarTitle = idx;
+        SETTINGS.saveToFile();
+      });
+      return;
     case ITEM_BATTERY:
       SETTINGS.statusBarBattery = (SETTINGS.statusBarBattery + 1) % 2;
       break;
     case ITEM_XTC_STATUS_BAR:
-      SETTINGS.xtcStatusBarMode = (SETTINGS.xtcStatusBarMode + 1) % XTC_STATUS_BAR_ITEMS;
-      break;
-    case ITEM_CLOCK: {
-      const bool wasEnabled = SETTINGS.statusBarClock != CrossPointSettings::STATUS_BAR_CLOCK_HIDE;
-      int clockIndex = clockCycleIndex(SETTINGS.statusBarClock);
-      clockIndex = (clockIndex + 1) % CLOCK_ITEMS;
-      SETTINGS.statusBarClock = CLOCK_CYCLE[clockIndex];
-      const bool isEnabled = SETTINGS.statusBarClock != CrossPointSettings::STATUS_BAR_CLOCK_HIDE;
-      if (!wasEnabled && isEnabled && halClock.isAvailable() && SETTINGS.clockHasBeenSynced) {
-        TimeUtils::applySystemClockFromRtc(true);
-      }
-      break;
-    }
+      optionPopup.show(StrId::STR_XTC_STATUS_BAR, xtcStatusBarNames, XTC_STATUS_BAR_ITEMS, SETTINGS.xtcStatusBarMode,
+                       [this](int idx) {
+                         SETTINGS.xtcStatusBarMode = idx;
+                         SETTINGS.saveToFile();
+                       });
+      return;
+    case ITEM_CLOCK:
+      optionPopup.show(StrId::STR_CLOCK, clockNames, CLOCK_ITEMS, clockCycleIndex(SETTINGS.statusBarClock),
+                       [this](int idx) {
+                         if (idx < 0 || idx >= CLOCK_ITEMS) return;
+                         applyStatusBarClockMode(CLOCK_CYCLE[idx]);
+                         SETTINGS.saveToFile();
+                       });
+      return;
     case ITEM_CLOCK_FORMAT:
       SETTINGS.clockFormat = (SETTINGS.clockFormat + 1) % CLOCK_FORMAT_ITEMS;
       break;
@@ -198,51 +213,83 @@ void StatusBarSettingsActivity::handleSelection() {
   SETTINGS.saveToFile();
 }
 
+std::string StatusBarSettingsActivity::rowValueText(const int index) {
+  switch (index) {
+    case ITEM_CHAPTER_PAGE_COUNT:
+      return SETTINGS.statusBarChapterPageCount ? tr(STR_SHOW) : tr(STR_HIDE);
+    case ITEM_BOOK_PROGRESS_PERCENTAGE:
+      return SETTINGS.statusBarBookProgressPercentage ? tr(STR_SHOW) : tr(STR_HIDE);
+    case ITEM_PROGRESS_BAR:
+      return I18N.get(progressBarNames[SETTINGS.statusBarProgressBar]);
+    case ITEM_PROGRESS_BAR_THICKNESS:
+      return I18N.get(progressBarThicknessNames[SETTINGS.statusBarProgressBarThickness]);
+    case ITEM_TITLE:
+      return I18N.get(titleNames[SETTINGS.statusBarTitle]);
+    case ITEM_BATTERY:
+      return SETTINGS.statusBarBattery ? tr(STR_SHOW) : tr(STR_HIDE);
+    case ITEM_XTC_STATUS_BAR:
+      return I18N.get(xtcStatusBarNames[SETTINGS.xtcStatusBarMode]);
+    case ITEM_CLOCK:
+      return I18N.get(clockNames[clockCycleIndex(SETTINGS.statusBarClock)]);
+    case ITEM_CLOCK_FORMAT: {
+      const uint8_t fmt = SETTINGS.clockFormat < CLOCK_FORMAT_ITEMS ? SETTINGS.clockFormat : 0;
+      return std::string(I18N.get(clockFormatNames[fmt]));
+    }
+    case ITEM_CLOCK_SYNC:
+      return SETTINGS.clockHasBeenSynced ? tr(STR_CLOCK_SYNCED) : tr(STR_NOT_SET);
+    default:
+      return tr(STR_HIDE);
+  }
+}
+
+void StatusBarSettingsActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  // Reserve the bottom band for the live status-bar preview footer (label +
+  // bar) so the list never runs underneath it, plus the button-hints row below.
+  // The preview is pinned directly above the hints (see render()), so the band
+  // is just the bar + its label, not a floating gap.
+  const int statusBarHeight = UITheme::getInstance().getStatusBarHeight();
+  const auto previewFooter =
+      static_cast<int16_t>(statusBarHeight + verticalPreviewTextPadding + metrics.verticalSpacing);
+  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                                                static_cast<int16_t>(metrics.buttonHintsHeight + previewFooter), 0});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+
+  // rowItems_'s labels/actionValue were set once in onEnter(); only the live
+  // value text needs refreshing here, by assigning into the existing
+  // rowValues_ strings (no array growth) rather than building a new
+  // items/values vector on every render.
+  for (int i = 0; i < visibleItemCount; i++) {
+    rowValues_[i] = rowValueText(i);
+    rowItems_[i].value = rowValues_[i].empty() ? nullptr : rowValues_[i].c_str();
+  }
+
+  fui::ListProps props;
+  props.items = rowItems_;
+  props.count = static_cast<uint16_t>(visibleItemCount);
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
+  props.valueInset = 8;               // air between the value and the row edge
+  props.labelText = screen.theme().smallText;
+  props.labelText.maxLines = 2;  // also the explicitly-set marker, see SettingsActivity
+  syncListViewport(screen, props);
+  screen.list(props);
+}
+
 void StatusBarSettingsActivity::render(RenderLock&&) {
+  if (optionPopup.processRender(renderer, mappedInput)) return;
+
   renderer.clearScreen();
 
   auto metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
 
+  // Header via GUI.drawHeader (already FreeInkUI-themed) for the battery
+  // indicator; the list renders through the app; the preview stays raw.
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_CUSTOMISE_STATUS_BAR));
 
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
-  GUI.drawList(
-      renderer, Rect{0, contentTop, pageWidth, contentHeight}, visibleItemCount, static_cast<int>(selectedIndex),
-      [](int index) { return std::string(I18N.get(menuNames[index])); }, nullptr, nullptr,
-      [](int index) -> std::string {
-        switch (index) {
-          case ITEM_CHAPTER_PAGE_COUNT:
-            return SETTINGS.statusBarChapterPageCount ? tr(STR_SHOW) : tr(STR_HIDE);
-          case ITEM_BOOK_PROGRESS_PERCENTAGE:
-            return SETTINGS.statusBarBookProgressPercentage ? tr(STR_SHOW) : tr(STR_HIDE);
-          case ITEM_PROGRESS_BAR:
-            return I18N.get(progressBarNames[SETTINGS.statusBarProgressBar]);
-          case ITEM_PROGRESS_BAR_THICKNESS:
-            return I18N.get(progressBarThicknessNames[SETTINGS.statusBarProgressBarThickness]);
-          case ITEM_TITLE:
-            return I18N.get(titleNames[SETTINGS.statusBarTitle]);
-          case ITEM_BATTERY:
-            return SETTINGS.statusBarBattery ? tr(STR_SHOW) : tr(STR_HIDE);
-          case ITEM_XTC_STATUS_BAR:
-            return I18N.get(xtcStatusBarNames[SETTINGS.xtcStatusBarMode]);
-          case ITEM_CLOCK:
-            return I18N.get(clockNames[clockCycleIndex(SETTINGS.statusBarClock)]);
-          case ITEM_CLOCK_FORMAT: {
-            const uint8_t fmt = SETTINGS.clockFormat < CLOCK_FORMAT_ITEMS ? SETTINGS.clockFormat : 0;
-            return std::string(I18N.get(clockFormatNames[fmt]));
-          }
-          case ITEM_CLOCK_SYNC:
-            return SETTINGS.clockHasBeenSynced ? tr(STR_CLOCK_SYNCED) : tr(STR_NOT_SET);
-          default:
-            return tr(STR_HIDE);
-        }
-      },
-      true);
+  renderUi();
 
-  // Draw button hints
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_TOGGLE), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
@@ -253,12 +300,13 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
     title = tr(STR_EXAMPLE_CHAPTER);
   }
 
-  GUI.drawStatusBar(renderer, 75, 8, 32, title, verticalPreviewPadding, 0, false);
+  // Anchor the preview as a footer directly above the button hints.
+  GUI.drawStatusBar(renderer, 75, 8, 32, title, metrics.buttonHintsHeight, 0, false);
 
-  renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding,
-                    renderer.getScreenHeight() - UITheme::getInstance().getStatusBarHeight() - verticalPreviewPadding -
-                        verticalPreviewTextPadding,
-                    tr(STR_PREVIEW));
+  renderer.drawCenteredText(UI_10_FONT_ID,
+                            renderer.getScreenHeight() - UITheme::getInstance().getStatusBarHeight() -
+                                metrics.buttonHintsHeight - verticalPreviewTextPadding,
+                            tr(STR_PREVIEW));
 
   renderer.displayBuffer();
 }

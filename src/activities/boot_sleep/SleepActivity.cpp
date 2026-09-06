@@ -1,18 +1,26 @@
 #include "SleepActivity.h"
 
 #include <Epub.h>
+#include <Epub/converters/PngToFramebufferConverter.h>
+#include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
+#include <HalGPIO.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <Memory.h>
 #include <PNGdec.h>
 #include <Txt.h>
 #include <Xtc.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -25,6 +33,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/Logo.h"
+#include "images/MoonIcon.h"
 #include "util/PngSleepRenderer.h"
 #include "util/ReadingStatsAnalytics.h"
 #include "util/SleepImageUtils.h"
@@ -428,6 +437,432 @@ struct BitmapPlacement {
   float cropY = 0.0f;
 };
 
+// ---------------------------------------------------------------------------
+// Transparent overlay sleep (upstream): alpha BMP/PNG art composited over the
+// retained screen. Kept separate from /sleep.bmp and /.sleep so alpha-overlay
+// art does not mix with full-screen wallpapers.
+// ---------------------------------------------------------------------------
+constexpr char TRANSPARENT_SLEEP_ROOT_BMP[] = "/sleep-overlay.bmp";
+constexpr char TRANSPARENT_SLEEP_ROOT_PNG[] = "/sleep-overlay.png";
+constexpr char TRANSPARENT_SLEEP_DIR[] = "/.sleep-overlay";
+constexpr char TRANSPARENT_SLEEP_LEGACY_DIR[] = "/sleep-overlay";
+constexpr size_t MAX_SLEEP_FILE_NAME_LEN = 256;
+constexpr uint8_t MIN_VISIBLE_ALPHA = 8;
+
+struct OverlayBmpInfo {
+  int width = 0;
+  int height = 0;
+  bool topDown = false;
+  uint32_t dataOffset = 0;
+  uint32_t rowBytes = 0;
+};
+
+uint16_t readLE16(HalFile& file) {
+  const int c0 = file.read();
+  const int c1 = file.read();
+  const auto b0 = static_cast<uint8_t>(c0 < 0 ? 0 : c0);
+  const auto b1 = static_cast<uint8_t>(c1 < 0 ? 0 : c1);
+  return static_cast<uint16_t>(b0) | (static_cast<uint16_t>(b1) << 8);
+}
+
+uint32_t readLE32(HalFile& file) {
+  const int c0 = file.read();
+  const int c1 = file.read();
+  const int c2 = file.read();
+  const int c3 = file.read();
+  const auto b0 = static_cast<uint8_t>(c0 < 0 ? 0 : c0);
+  const auto b1 = static_cast<uint8_t>(c1 < 0 ? 0 : c1);
+  const auto b2 = static_cast<uint8_t>(c2 < 0 ? 0 : c2);
+  const auto b3 = static_cast<uint8_t>(c3 < 0 ? 0 : c3);
+  return static_cast<uint32_t>(b0) | (static_cast<uint32_t>(b1) << 8) | (static_cast<uint32_t>(b2) << 16) |
+         (static_cast<uint32_t>(b3) << 24);
+}
+
+uint32_t readBE32(HalFile& file) {
+  const int c0 = file.read();
+  const int c1 = file.read();
+  const int c2 = file.read();
+  const int c3 = file.read();
+  if (c0 < 0 || c1 < 0 || c2 < 0 || c3 < 0) return 0;
+  return (static_cast<uint32_t>(c0) << 24) | (static_cast<uint32_t>(c1) << 16) | (static_cast<uint32_t>(c2) << 8) |
+         static_cast<uint32_t>(c3);
+}
+
+bool isValidPngHeader(HalFile& file) {
+  static constexpr uint8_t PNG_SIGNATURE[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+  static constexpr uint32_t MAX_SOURCE_PIXELS = 2048u * 1536u;
+  uint8_t signature[8];
+  if (!file.seek(0) || file.read(signature, sizeof(signature)) != static_cast<int>(sizeof(signature)) ||
+      !std::equal(std::begin(signature), std::end(signature), std::begin(PNG_SIGNATURE))) {
+    return false;
+  }
+
+  const uint32_t ihdrLength = readBE32(file);
+  char chunkType[4];
+  if (file.read(reinterpret_cast<uint8_t*>(chunkType), sizeof(chunkType)) != static_cast<int>(sizeof(chunkType)) ||
+      ihdrLength != 13 || !std::equal(std::begin(chunkType), std::end(chunkType), "IHDR")) {
+    return false;
+  }
+
+  const uint32_t width = readBE32(file);
+  const uint32_t height = readBE32(file);
+  const int bitDepth = file.read();
+  const int colorType = file.read();
+  const int compression = file.read();
+  const int filter = file.read();
+  const int interlace = file.read();
+
+  const bool supportedBitDepth =
+      bitDepth == 8 || ((colorType == PNG_PIXEL_GRAYSCALE || colorType == PNG_PIXEL_INDEXED) &&
+                        (bitDepth == 1 || bitDepth == 2 || bitDepth == 4));
+  const bool supportedColorType = colorType == PNG_PIXEL_GRAYSCALE || colorType == PNG_PIXEL_TRUECOLOR ||
+                                  colorType == PNG_PIXEL_INDEXED || colorType == PNG_PIXEL_GRAY_ALPHA ||
+                                  colorType == PNG_PIXEL_TRUECOLOR_ALPHA;
+  return width > 0 && height > 0 && width <= 2048 && height <= 3072 && width * height <= MAX_SOURCE_PIXELS &&
+         supportedBitDepth && supportedColorType && compression == 0 && filter == 0 && interlace == 0;
+}
+
+BitmapPlacement calculateBitmapPlacement(const int bitmapWidth, const int bitmapHeight, const GfxRenderer& renderer) {
+  BitmapPlacement placement;
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+
+  if (bitmapWidth > pageWidth || bitmapHeight > pageHeight) {
+    float ratio = static_cast<float>(bitmapWidth) / static_cast<float>(bitmapHeight);
+    const float screenRatio = static_cast<float>(pageWidth) / static_cast<float>(pageHeight);
+
+    if (ratio > screenRatio) {
+      if (SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP) {
+        placement.cropX = 1.0f - (screenRatio / ratio);
+        ratio = (1.0f - placement.cropX) * static_cast<float>(bitmapWidth) / static_cast<float>(bitmapHeight);
+      }
+      placement.x = 0;
+      placement.y = std::round((static_cast<float>(pageHeight) - static_cast<float>(pageWidth) / ratio) / 2);
+    } else {
+      if (SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP) {
+        placement.cropY = 1.0f - (ratio / screenRatio);
+        ratio = static_cast<float>(bitmapWidth) / ((1.0f - placement.cropY) * static_cast<float>(bitmapHeight));
+      }
+      placement.x = std::round((static_cast<float>(pageWidth) - static_cast<float>(pageHeight) * ratio) / 2);
+      placement.y = 0;
+    }
+  } else {
+    placement.x = (pageWidth - bitmapWidth) / 2;
+    placement.y = (pageHeight - bitmapHeight) / 2;
+  }
+
+  return placement;
+}
+
+bool parseOverlayBmpHeader(HalFile& file, OverlayBmpInfo& info, const bool logErrors) {
+  if (!file) return false;
+  if (!file.seek(0)) return false;
+
+  if (readLE16(file) != 0x4D42) {
+    if (logErrors) LOG_ERR("SLP", "Transparent overlay is not a BMP");
+    return false;
+  }
+
+  file.seekCur(8);
+  info.dataOffset = readLE32(file);
+
+  const uint32_t dibSize = readLE32(file);
+  if (dibSize < 40) {
+    if (logErrors) LOG_ERR("SLP", "Unsupported BMP DIB header: %u", static_cast<unsigned>(dibSize));
+    return false;
+  }
+
+  info.width = static_cast<int32_t>(readLE32(file));
+  const auto rawHeight = static_cast<int32_t>(readLE32(file));
+  if (rawHeight == std::numeric_limits<int32_t>::min()) {
+    if (logErrors) LOG_ERR("SLP", "Bad transparent overlay dimensions: %dx%d", info.width, rawHeight);
+    return false;
+  }
+  info.topDown = rawHeight < 0;
+  info.height = info.topDown ? -rawHeight : rawHeight;
+
+  const uint16_t planes = readLE16(file);
+  const uint16_t bpp = readLE16(file);
+  const uint32_t compression = readLE32(file);
+
+  // Match Bitmap::parseHeaders(): accept BI_RGB (0) and 32bpp BI_BITFIELDS (3), but keep the same
+  // byte-layout assumption as custom sleep BMPs. The renderer below treats pixels as BGRA and does not parse masks.
+  if (planes != 1 || bpp != 32 || !(compression == 0 || compression == 3)) {
+    if (logErrors) {
+      LOG_ERR("SLP", "Transparent overlay must be 32-bit BGRA BMP (planes=%u bpp=%u comp=%u)", planes, bpp,
+              static_cast<unsigned>(compression));
+    }
+    return false;
+  }
+
+  constexpr int MAX_IMAGE_WIDTH = 2048;
+  constexpr int MAX_IMAGE_HEIGHT = 3072;
+  if (info.width <= 0 || info.height <= 0 || info.width > MAX_IMAGE_WIDTH || info.height > MAX_IMAGE_HEIGHT) {
+    if (logErrors) LOG_ERR("SLP", "Bad transparent overlay dimensions: %dx%d", info.width, info.height);
+    return false;
+  }
+
+  info.rowBytes = static_cast<uint32_t>(info.width) * 4u;
+  if (!file.seek(info.dataOffset)) {
+    if (logErrors) LOG_ERR("SLP", "Failed to seek transparent overlay pixel data");
+    return false;
+  }
+
+  return true;
+}
+
+uint8_t bayerThreshold4x4(const int x, const int y) {
+  static constexpr uint8_t BAYER_4X4[16] = {0, 128, 32, 160, 192, 64, 224, 96, 48, 176, 16, 144, 240, 112, 208, 80};
+  return BAYER_4X4[((y & 0x03) << 2) | (x & 0x03)];
+}
+
+enum class TransparentOverlayPass : uint8_t { BW, GrayscaleLsb, GrayscaleMsb };
+
+uint8_t quantizeOverlayLum(const uint8_t lum) {
+  // Match Bitmap's native-palette path: 0, 85, 170, 255 map directly to levels 0..3.
+  return lum >> 6;
+}
+
+bool renderTransparentOverlayPass(HalFile& file, const OverlayBmpInfo& info, const BitmapPlacement& placement,
+                                  const GfxRenderer& renderer, uint8_t* row, const TransparentOverlayPass pass) {
+  if (!file.seek(info.dataOffset)) {
+    LOG_ERR("SLP", "Failed to seek transparent overlay pixel data");
+    return false;
+  }
+
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+  const int cropPixX = std::floor(info.width * placement.cropX / 2.0f);
+  const int cropPixY = std::floor(info.height * placement.cropY / 2.0f);
+  const float croppedWidth = (1.0f - placement.cropX) * static_cast<float>(info.width);
+  const float croppedHeight = (1.0f - placement.cropY) * static_cast<float>(info.height);
+
+  float scale = 1.0f;
+  if (croppedWidth > 0.0f && croppedHeight > 0.0f) {
+    const float widthScale = static_cast<float>(pageWidth) / croppedWidth;
+    const float heightScale = static_cast<float>(pageHeight) / croppedHeight;
+    scale = std::min(widthScale, heightScale);
+    if (scale > 1.0f) scale = 1.0f;
+  }
+  const bool isScaled = scale < 1.0f;
+
+  for (int bmpY = 0; bmpY < info.height; bmpY++) {
+    if (file.read(row, info.rowBytes) != static_cast<int>(info.rowBytes)) {
+      LOG_ERR("SLP", "Short read in transparent overlay row %d", bmpY);
+      return false;
+    }
+
+    int screenY = -cropPixY + (info.topDown ? bmpY : info.height - 1 - bmpY);
+    if (isScaled) screenY = std::floor(screenY * scale);
+    screenY += placement.y;
+
+    if (screenY >= pageHeight) {
+      if (info.topDown) break;
+      continue;
+    }
+    if (screenY < 0) {
+      if (!info.topDown) break;
+      continue;
+    }
+
+    for (int bmpX = cropPixX; bmpX < info.width - cropPixX; bmpX++) {
+      int screenX = bmpX - cropPixX;
+      if (isScaled) screenX = std::floor(screenX * scale);
+      screenX += placement.x;
+
+      if (screenX >= renderer.getScreenWidth()) break;
+      if (screenX < 0) continue;
+
+      const uint8_t* pixel = row + (static_cast<size_t>(bmpX) * 4u);
+      const uint8_t alpha = pixel[3];
+      if (alpha < MIN_VISIBLE_ALPHA || alpha <= bayerThreshold4x4(screenX, screenY)) continue;
+
+      const uint8_t lum = (77u * pixel[2] + 150u * pixel[1] + 29u * pixel[0]) >> 8;
+      const uint8_t level = quantizeOverlayLum(lum);
+
+      switch (pass) {
+        case TransparentOverlayPass::BW:
+          // Same first pass as custom bitmap sleep: all non-white levels are painted black.
+          // Transparent overlay's only difference is that opaque white explicitly erases underlying text.
+          renderer.drawPixel(screenX, screenY, level < 3);
+          break;
+        case TransparentOverlayPass::GrayscaleLsb:
+          if (level == 1) renderer.drawPixel(screenX, screenY, false);
+          break;
+        case TransparentOverlayPass::GrayscaleMsb:
+          if (level == 1 || level == 2) renderer.drawPixel(screenX, screenY, false);
+          break;
+      }
+    }
+  }
+
+  return true;
+}
+
+enum class AlphaOverlayResult : uint8_t { Rendered, NotAlphaOverlay, Error };
+enum class AlphaScanResult : uint8_t { Useful, NotUseful, Error };
+
+AlphaScanResult scanForUsefulAlpha(HalFile& file, const OverlayBmpInfo& info, uint8_t* row) {
+  if (!file.seek(info.dataOffset)) {
+    LOG_ERR("SLP", "Failed to seek transparent overlay pixel data");
+    return AlphaScanResult::Error;
+  }
+
+  bool hasVisiblePixel = false;
+  bool hasNonOpaquePixel = false;
+  for (int bmpY = 0; bmpY < info.height; bmpY++) {
+    if (file.read(row, info.rowBytes) != static_cast<int>(info.rowBytes)) {
+      LOG_ERR("SLP", "Short read while checking transparent overlay row %d", bmpY);
+      return AlphaScanResult::Error;
+    }
+
+    for (int bmpX = 0; bmpX < info.width; bmpX++) {
+      const uint8_t alpha = row[static_cast<size_t>(bmpX) * 4u + 3u];
+      hasVisiblePixel |= alpha >= MIN_VISIBLE_ALPHA;
+      hasNonOpaquePixel |= alpha < 255;
+      if (hasVisiblePixel && hasNonOpaquePixel) return AlphaScanResult::Useful;
+    }
+  }
+
+  return AlphaScanResult::NotUseful;
+}
+
+AlphaOverlayResult tryRenderTransparentOverlayBmp(HalFile& file, GfxRenderer& renderer, const char* pathForLog) {
+  OverlayBmpInfo info;
+  if (!parseOverlayBmpHeader(file, info, false)) return AlphaOverlayResult::NotAlphaOverlay;
+
+  const auto placement = calculateBitmapPlacement(info.width, info.height, renderer);
+  auto row = makeUniqueNoThrow<uint8_t[]>(info.rowBytes);
+  if (!row) {
+    LOG_ERR("SLP", "OOM: transparent overlay row (%u bytes)", static_cast<unsigned>(info.rowBytes));
+    return AlphaOverlayResult::Error;
+  }
+
+  const auto alphaScanResult = scanForUsefulAlpha(file, info, row.get());
+  if (alphaScanResult == AlphaScanResult::Error) return AlphaOverlayResult::Error;
+  if (alphaScanResult == AlphaScanResult::NotUseful) return AlphaOverlayResult::NotAlphaOverlay;
+
+  LOG_DBG("SLP", "Rendering transparent overlay: %s (%dx%d)", pathForLog, info.width, info.height);
+
+  if (!renderTransparentOverlayPass(file, info, placement, renderer, row.get(), TransparentOverlayPass::BW))
+    return AlphaOverlayResult::Error;
+  displaySleepGrayscaleBase(renderer);
+
+  renderer.clearScreen(0x00);
+  renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
+  if (!renderTransparentOverlayPass(file, info, placement, renderer, row.get(), TransparentOverlayPass::GrayscaleLsb)) {
+    renderer.setRenderMode(GfxRenderer::BW);
+    // The BW composite is already on the panel. Keep it instead of falling
+    // through to another overlay with this grayscale work buffer cleared.
+    return AlphaOverlayResult::Rendered;
+  }
+  renderer.copyGrayscaleLsbBuffers();
+
+  renderer.clearScreen(0x00);
+  renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
+  if (!renderTransparentOverlayPass(file, info, placement, renderer, row.get(), TransparentOverlayPass::GrayscaleMsb)) {
+    renderer.setRenderMode(GfxRenderer::BW);
+    return AlphaOverlayResult::Rendered;
+  }
+  renderer.copyGrayscaleMsbBuffers();
+
+  renderer.displayGrayBuffer();
+  renderer.setRenderMode(GfxRenderer::BW);
+  return AlphaOverlayResult::Rendered;
+}
+
+bool findNextValidOverlayImage(HalFile& dir, char* name) {
+  for (auto dirFile = dir.openNextFile(); dirFile; dirFile = dir.openNextFile()) {
+    if (dirFile.isDirectory()) {
+      dirFile.close();
+      continue;
+    }
+
+    dirFile.getName(name, MAX_SLEEP_FILE_NAME_LEN);
+    if (name[0] == '\0' || name[0] == '.') {
+      dirFile.close();
+      continue;
+    }
+
+    const bool isBmp = FsHelpers::hasBmpExtension(name);
+    const bool isPng = FsHelpers::hasPngExtension(std::string_view{name});
+    if (!isBmp && !isPng) {
+      LOG_DBG("SLP", "Skipping unsupported sleep overlay: %s", name);
+      dirFile.close();
+      continue;
+    }
+
+    const bool isValid = isBmp ? [&dirFile]() {
+      Bitmap bitmap(dirFile);
+      return bitmap.parseHeaders() == BmpReaderError::Ok;
+    }()
+                               : isValidPngHeader(dirFile);
+    dirFile.close();
+    if (!isValid) {
+      LOG_DBG("SLP", "Skipping invalid sleep overlay: %s", name);
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+// Picks an overlay from dirPath, excluding recently shown ones (separate recent
+// ring from the full-screen wallpapers). Two passes over the directory instead
+// of collecting names, so the selection never allocates a filename vector.
+bool selectRandomOverlayFile(const char* dirPath, std::string& selectedPath) {
+  auto dir = Storage.open(dirPath);
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    return false;
+  }
+
+  auto name = makeUniqueNoThrow<char[]>(MAX_SLEEP_FILE_NAME_LEN);
+  if (!name) {
+    LOG_ERR("SLP", "OOM: sleep filename buffer");
+    dir.close();
+    return false;
+  }
+
+  uint16_t fileCount = 0;
+  while (fileCount < UINT16_MAX && findNextValidOverlayImage(dir, name.get())) ++fileCount;
+  if (fileCount == 0) {
+    dir.close();
+    return false;
+  }
+
+  const uint8_t window = static_cast<uint8_t>(std::min<uint16_t>(APP_STATE.recentOverlaySleepFill, fileCount - 1));
+  auto randomFileIndex = static_cast<uint16_t>(random(fileCount));
+  for (uint8_t attempt = 0; attempt < 20 && APP_STATE.isRecentOverlaySleep(randomFileIndex, window); attempt++) {
+    randomFileIndex = static_cast<uint16_t>(random(fileCount));
+  }
+
+  dir.rewindDirectory();
+  for (uint16_t index = 0; index <= randomFileIndex; ++index) {
+    if (!findNextValidOverlayImage(dir, name.get())) {
+      dir.close();
+      return false;
+    }
+  }
+  dir.close();
+
+  selectedPath.reserve(strlen(dirPath) + 1 + strlen(name.get()));
+  selectedPath = dirPath;
+  selectedPath += "/";
+  selectedPath += name.get();
+  APP_STATE.pushRecentOverlaySleep(randomFileIndex);
+  APP_STATE.saveToFile();
+  return true;
+}
+
+void releaseSdFontCachesForDecode(const GfxRenderer& renderer) {
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    LOG_DBG("SLP", "Free heap before SD font cache release: %d bytes", ESP.getFreeHeap());
+    fcm->releaseSdFontCaches();
+    LOG_DBG("SLP", "Free heap before sleep image decode: %d bytes", ESP.getFreeHeap());
+  }
+}
+
 struct CustomSleepImage {
   std::string path;
   bool isPng = false;
@@ -578,7 +1013,7 @@ void drawFullScreenCoverBitmap(const GfxRenderer& renderer, const Bitmap& bitmap
 
 bool selectConfiguredCustomSleepImage(CustomSleepImage& selected) {
   const std::string sleepDir = SleepImageUtils::resolveConfiguredSleepDirectory();
-  auto dir = sleepDir.empty() ? FsFile{} : Storage.open(sleepDir.c_str());
+  auto dir = sleepDir.empty() ? HalFile{} : Storage.open(sleepDir.c_str());
 
   if (!dir || !dir.isDirectory()) {
     if (dir) {
@@ -669,7 +1104,7 @@ bool renderBitmapStatsSleepScreen(GfxRenderer& renderer, const std::string& sour
     return true;
   }
 
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("SLP", sourcePath, file)) {
     return false;
   }
@@ -713,6 +1148,49 @@ void SleepActivity::onEnter() {
   const bool restoreDarkMode = renderer.isDarkMode();
   if (restoreDarkMode) {
     renderer.setDarkMode(false);
+  }
+
+  // Sleep screens always use normal output polarity. This activity draws
+  // directly from onEnter (outside ActivityManager's per-render polarity
+  // resolution), so clear any inversion left over from a night-mode render.
+  const bool frameWasInverted = display.isInverted();
+  display.setInverted(false);
+
+  // Quick Resume keeps the last screen (main.cpp persists the framebuffer after
+  // this render, so the moon marker below is part of the saved frame).
+  const bool renderQuickResume =
+      SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
+      (fromTimeout &&
+       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT);
+  if (renderQuickResume) {
+    // Materialize any output-level inversion so the retained content keeps
+    // its visible polarity after the display driver returns to normal.
+    if (frameWasInverted) renderer.invertScreen();
+    renderLastScreenSleepScreen();
+    if (restoreDarkMode) {
+      renderer.setDarkMode(true);
+    }
+    return;
+  }
+
+  if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM) {
+    // Transparent mode retains the current framebuffer and composites the
+    // overlay on top; the popup is drawn and undone so it never bakes in.
+    if (frameWasInverted) renderer.invertScreen();
+    if (APP_STATE.lastSleepFromReader) {
+      ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
+    }
+    showRestorableSleepPopup(renderer);
+    if (APP_STATE.lastSleepFromReader) {
+      renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+    }
+    releasePngSleepMemory(renderer, true);
+    releaseSdFontCachesForDecode(renderer);
+    renderTransparentCustomSleepScreen();
+    if (restoreDarkMode) {
+      renderer.setDarkMode(true);
+    }
+    return;
   }
 
   if (APP_STATE.lastSleepFromReader) {
@@ -785,7 +1263,7 @@ void SleepActivity::renderCustomSleepScreen() const {
       }
     } else {
       GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
-      FsFile file;
+      HalFile file;
       if (SleepScreenCache::load(renderer, selected.path)) {
         displaySleepBuffer(renderer);
         commitCustomSleepImage(selected);
@@ -806,7 +1284,7 @@ void SleepActivity::renderCustomSleepScreen() const {
     }
   }
 
-  FsFile file;
+  HalFile file;
   if (Storage.openFileForRead("SLP", "/sleep.bmp", file)) {
     GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
     Bitmap bitmap(file, true);
@@ -856,7 +1334,8 @@ void SleepActivity::renderDefaultSleepScreen() const {
   displaySleepBuffer(renderer);
 }
 
-void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const std::string& sourcePath) const {
+void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const std::string& sourcePath,
+                                            const bool preserveBackground) const {
   int x, y;
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
@@ -894,18 +1373,22 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const std::str
   }
 
   LOG_DBG("SLP", "drawing to %d x %d", x, y);
-  renderer.clearScreen();
+  // Overlays draw over the retained frame: drawBitmap leaves white pixels
+  // untouched, so skipping the clear makes them transparent.
+  if (!preserveBackground) renderer.clearScreen();
 
-  const bool hasGreyscale = bitmap.hasGreyscale() &&
-                            SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
+  const bool hasGreyscale =
+      bitmap.hasGreyscale() && (preserveBackground || SETTINGS.sleepScreenCoverFilter ==
+                                                          CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER);
 
   renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
 
-  if (SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
+  if (!preserveBackground &&
+      SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
     renderer.invertScreen();
   }
 
-  if (!sourcePath.empty() && canUseSleepCache(bitmap)) {
+  if (!preserveBackground && !sourcePath.empty() && canUseSleepCache(bitmap)) {
     SleepScreenCache::save(renderer, sourcePath);
   }
 
@@ -930,6 +1413,105 @@ bool SleepActivity::renderPngSleepScreen(const std::string& sourcePath) const {
 
   displaySleepBuffer(renderer);
   return true;
+}
+
+bool SleepActivity::renderSleepOverlayFile(HalFile& file, const char* pathForLog) const {
+  const auto alphaResult = tryRenderTransparentOverlayBmp(file, renderer, pathForLog);
+  if (alphaResult == AlphaOverlayResult::Rendered) return true;
+  if (alphaResult == AlphaOverlayResult::Error) return false;
+
+  Bitmap bitmap(file);
+  const auto parseResult = bitmap.parseHeaders();
+  if (parseResult != BmpReaderError::Ok) {
+    LOG_ERR("SLP", "Invalid sleep overlay BMP %s: %s", pathForLog, Bitmap::errorToString(parseResult));
+    return false;
+  }
+
+  LOG_DBG("SLP", "Rendering regular BMP sleep overlay: %s (%dx%d)", pathForLog, bitmap.getWidth(), bitmap.getHeight());
+  renderBitmapSleepScreen(bitmap, "", /*preserveBackground=*/true);
+  return true;
+}
+
+bool SleepActivity::renderTransparentOverlayPng(const std::string& path) const {
+  ImageDimensions dimensions;
+  if (!PngToFramebufferConverter::getDimensionsStatic(path, dimensions)) return false;
+
+  const auto placement = calculateBitmapPlacement(dimensions.width, dimensions.height, renderer);
+  RenderConfig config;
+  config.x = placement.x;
+  config.y = placement.y;
+  config.maxWidth = renderer.getScreenWidth();
+  config.maxHeight = renderer.getScreenHeight();
+  config.useDithering = false;
+  config.sourceCropX = placement.cropX;
+  config.sourceCropY = placement.cropY;
+  config.useExactDimensions = placement.cropX > 0.0f || placement.cropY > 0.0f;
+  config.preserveAlpha = true;
+
+  PngToFramebufferConverter converter;
+  LOG_DBG("SLP", "Rendering transparent PNG overlay: %s (%dx%d)", path.c_str(), dimensions.width, dimensions.height);
+
+  if (!converter.decodeToFramebuffer(path, renderer, config)) return false;
+  displaySleepGrayscaleBase(renderer);
+
+  renderer.clearScreen(0x00);
+  renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
+  if (!converter.decodeToFramebuffer(path, renderer, config)) {
+    renderer.setRenderMode(GfxRenderer::BW);
+    return true;
+  }
+  renderer.copyGrayscaleLsbBuffers();
+
+  renderer.clearScreen(0x00);
+  renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
+  if (!converter.decodeToFramebuffer(path, renderer, config)) {
+    renderer.setRenderMode(GfxRenderer::BW);
+    return true;
+  }
+  renderer.copyGrayscaleMsbBuffers();
+
+  renderer.displayGrayBuffer();
+  renderer.setRenderMode(GfxRenderer::BW);
+  return true;
+}
+
+bool SleepActivity::renderSleepOverlayPath(const std::string& path) const {
+  if (FsHelpers::hasPngExtension(path)) {
+    return Storage.exists(path.c_str()) && renderTransparentOverlayPng(path);
+  }
+
+  HalFile file;
+  if (!Storage.openFileForRead("SLP", path, file)) return false;
+  const bool rendered = renderSleepOverlayFile(file, path.c_str());
+  file.close();
+  return rendered;
+}
+
+void SleepActivity::renderTransparentCustomSleepScreen() const {
+  if (renderSleepOverlayPath(TRANSPARENT_SLEEP_ROOT_BMP)) return;
+  if (renderSleepOverlayPath(TRANSPARENT_SLEEP_ROOT_PNG)) return;
+
+  std::string selectedPath;
+  if (!selectRandomOverlayFile(TRANSPARENT_SLEEP_DIR, selectedPath)) {
+    selectRandomOverlayFile(TRANSPARENT_SLEEP_LEGACY_DIR, selectedPath);
+  }
+
+  if (!selectedPath.empty() && renderSleepOverlayPath(selectedPath)) return;
+
+  LOG_ERR("SLP", "No valid transparent sleep overlay found");
+  renderDefaultSleepScreen();
+}
+
+void SleepActivity::renderLastScreenSleepScreen() const {
+  const auto pageHeight = renderer.getScreenHeight();
+  renderer.drawImage(MoonIcon, 0, pageHeight - MOONICON_HEIGHT, MOONICON_WIDTH, MOONICON_HEIGHT);
+  if (gpio.deviceIsX3()) {
+    // The controller still holds the displayed page, so its differential base
+    // waveform can add the moon without a full-screen flash.
+    renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
+  } else {
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  }
 }
 
 bool SleepActivity::resolveLastBookCoverPath(std::string& coverBmpPath) const {
@@ -1001,7 +1583,7 @@ void SleepActivity::renderCoverSleepScreen() const {
     return (this->*renderNoCoverSleepScreen)();
   }
 
-  FsFile file;
+  HalFile file;
   if (SleepScreenCache::load(renderer, coverBmpPath)) {
     displaySleepBuffer(renderer);
     return;
@@ -1072,7 +1654,7 @@ void SleepActivity::renderCoverStatsSleepScreen(bool footerOnly) const {
     return;
   }
 
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("SLP", coverBmpPath, file)) {
     renderReadingDashboardSleepScreen();
     return;

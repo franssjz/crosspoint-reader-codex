@@ -3421,7 +3421,14 @@ static const EpdFontData notosans_10_regular = {
     nullptr,
     notosans_10_regularKernLeftClasses,
     notosans_10_regularKernRightClasses,
+    nullptr,  // kernLeftCodepoints: this font keeps the packed class maps above
+    nullptr,  // kernLeftClassIds
+    nullptr,  // kernRightCodepoints
+    nullptr,  // kernRightClassIds
     notosans_10_regularKernMatrix,
+    nullptr,  // kernRowOffsets: this font keeps the dense matrix above
+    nullptr,  // kernSparseCols
+    nullptr,  // kernSparseValues
     478,
     474,
     87,

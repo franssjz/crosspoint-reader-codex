@@ -4,37 +4,50 @@
 
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
-#include "../Activity.h"
+#include "../UiListActivity.h"
 #include "BookmarkStore.h"
-#include "util/ButtonNavigator.h"
 
-class BookmarksActivity final : public Activity {
+// Fork: the reader's highlights / page-marks list. Tap (or Confirm) opens the
+// bookmark; long-press (or a held Confirm) asks to delete it.
+class BookmarksActivity final : public UiListActivity {
   std::shared_ptr<Epub> epub;
   std::vector<BookmarkStore::Bookmark> bookmarks;
-  std::string headerTitle;
+  std::string headerTitleText;
   std::function<bool(const BookmarkStore::Bookmark&)> onDeleteBookmark;
-  ButtonNavigator buttonNavigator;
-  int selectorIndex = 0;
 
-  int getPageItems() const;
+  // Row cache, parallel to bookmarks: rowLabels owns the text the ListItems
+  // point at. Rebuilt only when bookmarks changes (rebuildRowItems()), never
+  // from buildScreen().
+  std::vector<std::string> rowLabels;
+  std::vector<freeink::ui::ListItem> rowItems;
+  void rebuildRowItems();
+
   std::string getItemLabel(int index) const;
-  void confirmDeleteSelectedBookmark();
+  void confirmDeleteBookmark(int index);
+  void finishCancelled();
+
+  int listCount() const override { return static_cast<int>(bookmarks.size()); }
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  void onRowLongPress(int index) override;
+  // Confirm activates on RELEASE (a hold is "delete"); Back finishes cancelled.
+  bool handleButtons() override;
+  const char* headerTitle() const override;
 
  public:
   explicit BookmarksActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                              const std::vector<BookmarkStore::Bookmark>& bookmarks,
                              std::shared_ptr<Epub> epub = nullptr, std::string headerTitle = {},
                              std::function<bool(const BookmarkStore::Bookmark&)> onDeleteBookmark = nullptr)
-      : Activity("Bookmarks", renderer, mappedInput),
+      : UiListActivity("Bookmarks", renderer, mappedInput, /*wantsTouchLongPress=*/true),
         epub(std::move(epub)),
         bookmarks(bookmarks),
-        headerTitle(std::move(headerTitle)),
+        headerTitleText(std::move(headerTitle)),
         onDeleteBookmark(std::move(onDeleteBookmark)) {}
 
   void onEnter() override;
   void onExit() override;
-  void loop() override;
-  void render(RenderLock&&) override;
 };

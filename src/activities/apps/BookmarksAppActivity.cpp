@@ -9,15 +9,17 @@
 #include <algorithm>
 #include <utility>
 
-#include "FavoritesStore.h"
-#include "RecentBooksStore.h"
 #include "../reader/BookmarksActivity.h"
+#include "FavoritesStore.h"
 #include "ReadingStatsStore.h"
+#include "RecentBooksStore.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
-#include "util/HeaderDateUtils.h"
+#include "components/UiAppHelpers.h"
 #include "util/BookIdentity.h"
+#include "util/HeaderDateUtils.h"
+
+namespace fui = freeink::ui;
 
 namespace {
 constexpr unsigned long DELETE_BOOKMARKS_HOLD_MS = 1000;
@@ -147,29 +149,46 @@ void BookmarksAppActivity::refreshEntries() {
     });
   }
 
-  if (selectedIndex >= static_cast<int>(entries.size())) {
-    selectedIndex = std::max(0, static_cast<int>(entries.size()) - 1);
+  if (nav.selected >= static_cast<int>(entries.size())) {
+    nav.selected = std::max(0, static_cast<int>(entries.size()) - 1);
+  }
+  rebuildRowItems();
+}
+
+void BookmarksAppActivity::rebuildRowItems() {
+  rowCounts.clear();
+  rowItems.clear();
+  rowCounts.reserve(entries.size());
+  rowItems.reserve(entries.size());
+  for (size_t i = 0; i < entries.size(); ++i) {
+    rowCounts.push_back(std::to_string(entries[i].bookmarks.size()));
+    fui::ListItem item;
+    item.label = entries[i].title.c_str();
+    item.subtitle = !entries[i].author.empty() ? entries[i].author.c_str() : entries[i].path.c_str();
+    item.value = rowCounts.back().c_str();
+    item.icon = listIconFor(UIIcon::Book, 32);
+    item.actionValue = static_cast<int16_t>(i);
+    rowItems.push_back(item);
   }
 }
 
-void BookmarksAppActivity::openSelectedBook() {
-  if (selectedIndex < 0 || selectedIndex >= static_cast<int>(entries.size())) {
+void BookmarksAppActivity::openBook(const int index) {
+  if (index < 0 || index >= static_cast<int>(entries.size())) {
     return;
   }
 
-  const BookEntry entry = entries[selectedIndex];
+  const BookEntry entry = entries[index];
   startActivityForResult(
-      std::make_unique<BookmarksActivity>(
-          renderer, mappedInput, entry.bookmarks, nullptr, entry.title,
-          [bookId = entry.bookId](const BookmarkStore::Bookmark& bookmark) {
-            BookmarkStore store;
-            store.load("", bookId);
-            const bool removed = store.removeItem(bookmark);
-            if (removed) {
-              store.save();
-            }
-            return removed;
-          }),
+      std::make_unique<BookmarksActivity>(renderer, mappedInput, entry.bookmarks, nullptr, entry.title,
+                                          [bookId = entry.bookId](const BookmarkStore::Bookmark& bookmark) {
+                                            BookmarkStore store;
+                                            store.load("", bookId);
+                                            const bool removed = store.removeItem(bookmark);
+                                            if (removed) {
+                                              store.save();
+                                            }
+                                            return removed;
+                                          }),
       [this, path = entry.path](const ActivityResult& result) {
         if (!result.isCancelled) {
           const auto& bookmark = std::get<BookmarkResult>(result.data);
@@ -177,7 +196,11 @@ void BookmarksAppActivity::openSelectedBook() {
                                            bookmark.visibleTextOffset);
           return;
         }
-        refreshEntries();
+        closeRouting();
+        {
+          RenderLock lock(*this);
+          refreshEntries();
+        }
         requestUpdate();
       });
 }
@@ -194,90 +217,94 @@ bool BookmarksAppActivity::clearBookmarksForBook(const std::string& bookId) cons
   return true;
 }
 
-void BookmarksAppActivity::confirmDeleteSelectedBook() {
-  if (selectedIndex < 0 || selectedIndex >= static_cast<int>(entries.size())) {
+void BookmarksAppActivity::confirmDeleteBook(const int index) {
+  if (index < 0 || index >= static_cast<int>(entries.size())) {
     return;
   }
 
-  const BookEntry entry = entries[selectedIndex];
+  const BookEntry entry = entries[index];
   startActivityForResult(
       std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_ALL_HIGHLIGHTS), entry.title),
       [this, bookId = entry.bookId](const ActivityResult& result) {
         if (!result.isCancelled) {
           clearBookmarksForBook(bookId);
+          closeRouting();
+          RenderLock lock(*this);
           refreshEntries();
+          nav.follow(listCount());
         }
         requestUpdate();
       });
 }
 
 void BookmarksAppActivity::onEnter() {
-  Activity::onEnter();
+  UiListActivity::onEnter();
   refreshEntries();
-  requestUpdate();
 }
 
-void BookmarksAppActivity::loop() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    finish();
-    return;
-  }
+void BookmarksAppActivity::onExit() {
+  Activity::onExit();
+  rowItems.clear();
+  rowCounts.clear();
+  entries.clear();
+}
 
+bool BookmarksAppActivity::handleButtons() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (mappedInput.getHeldTime() >= DELETE_BOOKMARKS_HOLD_MS) {
-      confirmDeleteSelectedBook();
-      return;
+      confirmDeleteBook(nav.selected);
+    } else {
+      activateIndex(nav.selected);
     }
+    return true;
+  }
+  return UiListActivity::handleButtons();
+}
 
-    openSelectedBook();
+void BookmarksAppActivity::activateIndex(const int index) {
+  if (index < 0 || index >= listCount()) return;
+  app.clearTapFlash();
+  nav.selected = index;
+  openBook(index);
+}
+
+void BookmarksAppActivity::onRowLongPress(const int index) {
+  if (index < 0 || index >= listCount()) return;
+  app.clearTapFlash();
+  nav.selected = index;
+  confirmDeleteBook(index);
+}
+
+void BookmarksAppActivity::drawChrome() {
+  HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_HIGHLIGHTS), tr(STR_HIGHLIGHTS_APP_DESC));
+}
+
+void BookmarksAppActivity::drawFooter() {
+  const auto labels =
+      mappedInput.mapLabels(tr(STR_BACK), entries.empty() ? "" : tr(STR_OPEN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void BookmarksAppActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+
+  if (entries.empty()) {
+    screen.centeredText(tr(STR_NO_HIGHLIGHTS), screen.theme().bodyText);
     return;
   }
 
-  buttonNavigator.onNextRelease([this] {
-    if (entries.empty()) {
-      return;
-    }
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, static_cast<int>(entries.size()));
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousRelease([this] {
-    if (entries.empty()) {
-      return;
-    }
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, static_cast<int>(entries.size()));
-    requestUpdate();
-  });
-}
-
-void BookmarksAppActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int listHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-
-  HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_HIGHLIGHTS), tr(STR_HIGHLIGHTS_APP_DESC));
-
-  if (entries.empty()) {
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, tr(STR_NO_HIGHLIGHTS));
-  } else {
-    GUI.drawList(renderer, Rect{0, contentTop, pageWidth, listHeight}, static_cast<int>(entries.size()), selectedIndex,
-                 [this](const int index) { return entries[index].title; },
-                 [this](const int index) {
-                   if (!entries[index].author.empty()) {
-                     return entries[index].author;
-                   }
-                   return entries[index].path;
-                 },
-                 [](const int) { return UIIcon::Book; },
-                 [this](const int index) { return std::to_string(entries[index].bookmarks.size()); });
-  }
-
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), entries.empty() ? "" : tr(STR_OPEN), tr(STR_DIR_UP),
-                                            tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+  fui::ListProps props;
+  props.items = rowItems.data();
+  props.count = static_cast<uint16_t>(rowItems.size());
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch | fui::InputLongPress;  // tap opens, long-press clears
+  props.valueInset = 8;
+  fui::TextStyle label = screen.theme().smallText;
+  label.bold = true;
+  props.labelText = label;
+  syncListViewport(screen, props, /*hasSubtitle=*/true);
+  screen.list(props);
 }

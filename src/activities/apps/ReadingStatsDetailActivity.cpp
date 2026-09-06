@@ -18,6 +18,7 @@
 
 #include "AppMetricCard.h"
 #include "BookStatsActionsActivity.h"
+#include "MappedInputManager.h"
 #include "ReadingStatsStore.h"
 #include "components/UITheme.h"
 #include "components/icons/settings2.h"
@@ -26,7 +27,11 @@
 #include "util/ReadingStatsAnalytics.h"
 #include "util/TimeUtils.h"
 
+namespace fui = freeink::ui;
+
 namespace {
+constexpr fui::ActionId ACTION_OPEN = 1;
+constexpr fui::ActionId ACTION_ACTIONS = 2;
 constexpr int COVER_WIDTH = 96;
 constexpr int COVER_HEIGHT = 140;
 constexpr int PROGRESS_BLOCK_HEIGHT = 38;
@@ -264,8 +269,7 @@ std::string buildSessionEstimateText(const uint64_t remainingMs, const ReadingBo
     return "";
   }
 
-  const uint32_t sessionsLeft =
-      static_cast<uint32_t>((remainingMs + averageSessionMs - 1) / averageSessionMs);
+  const uint32_t sessionsLeft = static_cast<uint32_t>((remainingMs + averageSessionMs - 1) / averageSessionMs);
   if (sessionsLeft == 0) {
     return "";
   }
@@ -279,8 +283,7 @@ std::string buildEstimatedTimeLeftText(const ReadingBookStats& book) {
     return tr(STR_DONE);
   }
 
-  if (book.totalReadingMs < MIN_ESTIMATE_READING_MS ||
-      book.lastProgressPercent < MIN_ESTIMATE_PROGRESS_PERCENT) {
+  if (book.totalReadingMs < MIN_ESTIMATE_READING_MS || book.lastProgressPercent < MIN_ESTIMATE_PROGRESS_PERCENT) {
     return tr(STR_ESTIMATE_AFTER_MORE_READING);
   }
 
@@ -375,7 +378,7 @@ void drawCover(GfxRenderer& renderer, const Rect& rect, const std::string& cover
     return;
   }
 
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("RSD", coverPath, file)) {
     drawFallback();
     return;
@@ -405,7 +408,53 @@ void ReadingStatsDetailActivity::onEnter() {
     resolvedCoverBmpPath = findFastCoverPath(*book);
     coverLoadPending = resolvedCoverBmpPath.empty();
   }
+
+  hitOpenRect = {};
+  hitActionsRect = {};
+  resetUi();
+  app.on(ACTION_OPEN, &ReadingStatsDetailActivity::onOpenEvent, this);
+  app.on(ACTION_ACTIONS, &ReadingStatsDetailActivity::onActionsEvent, this);
+  app.setScreen(&ReadingStatsDetailActivity::detailScreen, this);
   requestUpdate();
+}
+
+void ReadingStatsDetailActivity::detailScreen(UiScreen& screen, void* user) {
+  static_cast<ReadingStatsDetailActivity*>(user)->buildDetailScreen(screen);
+}
+
+// Touch hit rects over the hand-drawn page (the builder draws nothing).
+void ReadingStatsDetailActivity::buildDetailScreen(UiScreen& screen) {
+  if (!hitOpenRect.empty()) {
+    screen.frame().hit(hitOpenRect, ACTION_OPEN, 0, fui::InputTouch);
+  }
+  if (!hitActionsRect.empty()) {
+    screen.frame().hit(hitActionsRect, ACTION_ACTIONS, 0, fui::InputTouch);
+  }
+}
+
+void ReadingStatsDetailActivity::onOpenEvent(const fui::ActionEvent&, void* user) {
+  auto* self = static_cast<ReadingStatsDetailActivity*>(user);
+  if (!Storage.exists(self->bookPath.c_str())) return;
+  self->app.clearTapFlash();  // the tap leaves for the reader
+  self->onSelectBook(self->bookPath);
+}
+
+void ReadingStatsDetailActivity::onActionsEvent(const fui::ActionEvent&, void* user) {
+  auto* self = static_cast<ReadingStatsDetailActivity*>(user);
+  self->app.clearTapFlash();  // the tap opens the actions screen
+  self->openStatsActions();
+}
+
+bool ReadingStatsDetailActivity::scrollContent(const int delta) {
+  const int nextOffset = std::clamp(scrollOffset + delta, 0, maxScrollOffset);
+  if (nextOffset == scrollOffset) {
+    return false;
+  }
+  scrollOffset = nextOffset;
+  selectedStatsItem = 0;
+  invalidateBaseScreenBuffer();
+  requestUpdate();
+  return true;
 }
 
 void ReadingStatsDetailActivity::onExit() {
@@ -513,17 +562,23 @@ void ReadingStatsDetailActivity::loop() {
     return;
   }
 
-  const auto scrollBy = [&](const int delta) {
-    const int nextOffset = std::clamp(scrollOffset + delta, 0, maxScrollOffset);
-    if (nextOffset == scrollOffset) {
-      return false;
-    }
-    scrollOffset = nextOffset;
-    selectedStatsItem = 0;
-    invalidateBaseScreenBuffer();
-    requestUpdate();
-    return true;
-  };
+  // Touch goes through the FreeInkApp: render() registered the open/actions
+  // hit rects; swipes scroll the page.
+  const auto route = routeTouch(mappedInput);
+  if (route.routed && app.invalidated()) requestUpdate();
+  if (route) return;
+
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Up) {
+    scrollContent(DETAIL_SCROLL_STEP);
+    return;
+  }
+  if (swipe == MappedInputManager::SwipeDir::Down) {
+    scrollContent(-DETAIL_SCROLL_STEP);
+    return;
+  }
+
+  const auto scrollBy = [&](const int delta) { return scrollContent(delta); };
 
   buttonNavigator.onNextPress([&]() {
     if (maxScrollOffset > 0) {
@@ -587,6 +642,9 @@ void ReadingStatsDetailActivity::render(RenderLock&&) {
                                     lastSessionSnapshot.path == bookPath && lastSessionSnapshot.completedThisSession;
 
   if (!book) {
+    hitOpenRect = {};
+    hitActionsRect = {};
+    closeRouting();  // no targets on this page; drop the previous table
     renderer.clearScreen();
     invalidateBaseScreenBuffer();
     HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_READING_STATS));
@@ -634,7 +692,8 @@ void ReadingStatsDetailActivity::render(RenderLock&&) {
       renderer.wrappedText(UI_10_FONT_ID, currentChapter.c_str(), textWidth, 2, EpdFontFamily::BOLD);
   currentY += static_cast<int>(chapterLines.size()) * renderer.getLineHeight(UI_10_FONT_ID);
 
-  int cardsTop = std::max(actionsButtonBaseRect.y + actionsButtonBaseRect.height, currentY) + metrics.verticalSpacing + 10;
+  int cardsTop =
+      std::max(actionsButtonBaseRect.y + actionsButtonBaseRect.height, currentY) + metrics.verticalSpacing + 10;
   const int summaryBannerTop = cardsTop;
   if (showCompletionBanner) {
     cardsTop += SUMMARY_BANNER_HEIGHT + SUMMARY_BANNER_GAP;
@@ -665,10 +724,10 @@ void ReadingStatsDetailActivity::render(RenderLock&&) {
       renderer.drawText(UI_10_FONT_ID, textX, authorTop + scrollDy, book->author.c_str());
     }
 
-    drawProgressBlock(renderer, Rect{textX, bookProgressTop + scrollDy, textWidth, PROGRESS_BLOCK_HEIGHT}, tr(STR_BOOK_PROGRESS),
-                      book->lastProgressPercent);
-    drawProgressBlock(renderer, Rect{textX, chapterProgressTop + scrollDy, textWidth, PROGRESS_BLOCK_HEIGHT}, tr(STR_CHAPTER_PROGRESS),
-                      book->chapterProgressPercent);
+    drawProgressBlock(renderer, Rect{textX, bookProgressTop + scrollDy, textWidth, PROGRESS_BLOCK_HEIGHT},
+                      tr(STR_BOOK_PROGRESS), book->lastProgressPercent);
+    drawProgressBlock(renderer, Rect{textX, chapterProgressTop + scrollDy, textWidth, PROGRESS_BLOCK_HEIGHT},
+                      tr(STR_CHAPTER_PROGRESS), book->chapterProgressPercent);
 
     renderer.drawText(UI_10_FONT_ID, textX, chapterLabelTop + scrollDy, tr(STR_CURRENT_CHAPTER));
 
@@ -680,11 +739,10 @@ void ReadingStatsDetailActivity::render(RenderLock&&) {
 
     int drawCardsTop = cardsTop + scrollDy;
     if (showCompletionBanner) {
-      drawSummaryBanner(
-          renderer,
-          Rect{metrics.contentSidePadding, summaryBannerTop + scrollDy, pageWidth - metrics.contentSidePadding * 2,
-               SUMMARY_BANNER_HEIGHT},
-          tr(STR_BOOK_FINISHED), tr(STR_COMPLETED_THIS_SESSION), true);
+      drawSummaryBanner(renderer,
+                        Rect{metrics.contentSidePadding, summaryBannerTop + scrollDy,
+                             pageWidth - metrics.contentSidePadding * 2, SUMMARY_BANNER_HEIGHT},
+                        tr(STR_BOOK_FINISHED), tr(STR_COMPLETED_THIS_SESSION), true);
     }
 
     const int cardWidth = (pageWidth - metrics.contentSidePadding * 2 - METRIC_CARD_GAP) / 2;
@@ -728,6 +786,14 @@ void ReadingStatsDetailActivity::render(RenderLock&&) {
   if (actionsSelected) {
     drawStatsActionsButton(renderer, actionsButtonRect, true);
   }
+
+  // Touch targets follow the scrolled layout: the cover + title/progress band
+  // opens the book, the gear button opens the stats actions. Registered by
+  // the app on renderUi() below (the screen builder draws nothing).
+  hitOpenRect = fui::makeRect(coverRect.x, coverRect.y, pageWidth - metrics.contentSidePadding * 2, coverRect.height);
+  hitActionsRect =
+      fui::makeRect(actionsButtonRect.x, actionsButtonRect.y, actionsButtonRect.width, actionsButtonRect.height);
+  renderUi();
 
   const char* confirmLabel = actionsSelected ? tr(STR_SELECT) : (Storage.exists(bookPath.c_str()) ? tr(STR_OPEN) : "");
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));

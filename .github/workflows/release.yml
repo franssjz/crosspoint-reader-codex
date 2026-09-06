@@ -1,4 +1,10 @@
 name: Compile Release
+
+# Builds every supported board's release firmware on tag push. Each matrix
+# entry packages its own asset set: the C3 X4/X3 binary keeps the historic
+# `<tag>.bin` naming, the ESP32-S3 X4 Pro binary is published as
+# `<tag>-x4pro.bin`. Matrix pio_env names must match platformio.ini.
+
 on:
   push:
     tags:
@@ -13,7 +19,19 @@ permissions:
 
 jobs:
   build-release:
+    name: Build ${{ matrix.pio_env }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pio_env: gh_release
+            suffix: ""
+          - pio_env: x4pro-gh_release
+            suffix: "-x4pro"
+    env:
+      PIO_ENV: ${{ matrix.pio_env }}
+      ASSET_SUFFIX: ${{ matrix.suffix }}
     steps:
       - name: Checkout repository
         run: |
@@ -24,12 +42,34 @@ jobs:
           git checkout --force FETCH_HEAD
           git submodule update --init --recursive
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: false
+
       - name: Install PlatformIO Core
         run: |
           set -euo pipefail
-          python3 -m pip install --user -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip || \
-            python3 -m pip install --user --break-system-packages -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+          # platform-espressif32's builder/main.py imports these unconditionally; its own
+          # penv bootstrap (builder/penv_setup.py) is supposed to install them automatically
+          # but isn't picking them up reliably in this runner image, so pin them explicitly.
+          uv pip install --system -U "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
+            "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2" \
+            "cryptography>=45.0.3" "certifi>=2025.8.3" "ecdsa>=0.19.1" "bitstring>=4.3.1" \
+            "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
 
       - name: Build CPR-vCodex release
         env:
@@ -37,19 +77,24 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          pio run -e gh_release | tee "artifacts/${GITHUB_REF_NAME}-build.log"
+          pio run -e "${PIO_ENV}" -j1 | tee "artifacts/${GITHUB_REF_NAME}${ASSET_SUFFIX}-build.log"
 
       - name: Report firmware budget
         run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}${ASSET_SUFFIX}"
           python3 scripts/firmware_budget_report.py \
-            --tag "${GITHUB_REF_NAME}" \
-            --build-log "artifacts/${GITHUB_REF_NAME}-build.log" \
+            --tag "${tag}" \
+            --build-log "artifacts/${tag}-build.log" \
+            --metadata "artifacts/${tag}.json" \
+            --out-json "artifacts/${tag}-firmware-budget.json" \
+            --out-md "artifacts/${tag}-firmware-budget.md" \
             --fail-over-budget
 
       - name: Validate packaged release artifact
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="${GITHUB_REF_NAME}${ASSET_SUFFIX}"
           artifact="artifacts/${tag}.bin"
           metadata="artifacts/${tag}.json"
 
@@ -69,12 +114,13 @@ jobs:
           import os
           from pathlib import Path
 
-          tag = os.environ["GITHUB_REF_NAME"]
+          tag = os.environ["GITHUB_REF_NAME"] + os.environ.get("ASSET_SUFFIX", "")
+          expected_env = os.environ["PIO_ENV"]
           metadata = json.loads(Path(f"artifacts/{tag}.json").read_text(encoding="utf-8"))
           if metadata.get("artifactName") != f"{tag}.bin":
               raise SystemExit(f"metadata artifactName mismatch: {metadata.get('artifactName')} != {tag}.bin")
-          if metadata.get("environment") != "gh_release":
-              raise SystemExit(f"unexpected release environment: {metadata.get('environment')}")
+          if metadata.get("environment") != expected_env:
+              raise SystemExit(f"unexpected release environment: {metadata.get('environment')} != {expected_env}")
           print(f"Validated {metadata['artifactName']} ({metadata['firmwareBytes']} bytes)")
           PY
 
@@ -83,30 +129,39 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          release_tag="${GITHUB_REF_NAME}"
+          tag="${GITHUB_REF_NAME}${ASSET_SUFFIX}"
           artifact="artifacts/${tag}.bin"
           metadata="artifacts/${tag}.json"
           budget_json="artifacts/${tag}-firmware-budget.json"
           budget_md="artifacts/${tag}-firmware-budget.md"
           notes_file="$(mktemp)"
 
-          python3 scripts/release_notes_from_changelog.py --tag "${tag}" > "${notes_file}"
+          python3 scripts/release_notes_from_changelog.py --tag "${release_tag}" > "${notes_file}"
 
-          if gh release view "${tag}" >/dev/null 2>&1; then
-            gh release upload "${tag}" \
+          # Both matrix entries race on the same release; whichever lands first
+          # creates it, the other uploads into it. Retry create->upload once.
+          upload_assets() {
+            gh release upload "${release_tag}" \
               "${artifact}#${tag}.bin" \
               "${metadata}#${tag}.json" \
               "${budget_json}#${tag}-firmware-budget.json" \
               "${budget_md}#${tag}-firmware-budget.md" \
               --clobber
-            gh release edit "${tag}" --title "${tag}" --notes-file "${notes_file}"
+          }
+
+          if gh release view "${release_tag}" >/dev/null 2>&1; then
+            upload_assets
+            if [ -z "${ASSET_SUFFIX}" ]; then
+              gh release edit "${release_tag}" --title "${release_tag}" --notes-file "${notes_file}"
+            fi
           else
-            gh release create "${tag}" \
+            gh release create "${release_tag}" \
               "${artifact}#${tag}.bin" \
               "${metadata}#${tag}.json" \
               "${budget_json}#${tag}-firmware-budget.json" \
               "${budget_md}#${tag}-firmware-budget.md" \
               --verify-tag \
-              --title "${tag}" \
-              --notes-file "${notes_file}"
+              --title "${release_tag}" \
+              --notes-file "${notes_file}" || upload_assets
           fi

@@ -1,33 +1,10 @@
-#include <cassert>
+#include <gtest/gtest.h>
+
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 
 #include "lib/EpdFont/EpdFont.h"
 #include "lib/EpdFont/EpdFontData.h"
-
-static int testsPassed = 0;
-static int testsFailed = 0;
-
-#define ASSERT_EQ(a, b)                                                                            \
-  do {                                                                                             \
-    if ((a) != (b)) {                                                                              \
-      fprintf(stderr, "  FAIL: %s:%d: %s == %d, expected %d\n", __FILE__, __LINE__, #a, (a), (b)); \
-      testsFailed++;                                                                               \
-      return;                                                                                      \
-    }                                                                                              \
-  } while (0)
-
-#define ASSERT_TRUE(cond)                                                \
-  do {                                                                   \
-    if (!(cond)) {                                                       \
-      fprintf(stderr, "  FAIL: %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      testsFailed++;                                                     \
-      return;                                                            \
-    }                                                                    \
-  } while (0)
-
-#define PASS() testsPassed++
 
 // ============================================================================
 // Synthetic test font
@@ -43,8 +20,10 @@ static int testsFailed = 0;
 //   o->a: -2  (-0.125px)      o->o: -3  (-0.1875px)
 // ============================================================================
 
+namespace {
+
 // clang-format off
-static const EpdGlyph kGlyphs[] = {
+const EpdGlyph kGlyphs[] = {
   // idx  width  height  advanceX  left  top  dataLength  dataOffset
   /* 0 'T' */ { 8, 12, 137, 0, 12, 0, 0 },
   /* 1 'a' */ { 7,  8, 130, 0,  8, 0, 0 },
@@ -52,28 +31,28 @@ static const EpdGlyph kGlyphs[] = {
   /* 3 'x' */ { 7,  8, 136, 0,  8, 0, 0 },
 };
 
-static const EpdUnicodeInterval kIntervals[] = {
+const EpdUnicodeInterval kIntervals[] = {
   { 0x54, 0x54, 0 },  // 'T' -> glyph[0]
   { 0x61, 0x61, 1 },  // 'a' -> glyph[1]
   { 0x6F, 0x6F, 2 },  // 'o' -> glyph[2]
   { 0x78, 0x78, 3 },  // 'x' -> glyph[3]
 };
 
-static const EpdKernClassEntry kKernLeft[] = {
+const EpdKernClassEntry kKernLeft[] = {
   { 0x54, 1 },  // 'T' -> left class 1
   { 0x6F, 2 },  // 'o' -> left class 2
 };
 
-static const EpdKernClassEntry kKernRight[] = {
+const EpdKernClassEntry kKernRight[] = {
   { 0x61, 1 },  // 'a' -> right class 1
   { 0x6F, 2 },  // 'o' -> right class 2
 };
 
 // Flat matrix: leftClassCount(2) x rightClassCount(2), 4.4 fixed-point
 //   [L1,R1]=kern(T,a)  [L1,R2]=kern(T,o)  [L2,R1]=kern(o,a)  [L2,R2]=kern(o,o)
-static const int8_t kKernMatrix[] = { -5, -7, -2, -3 };
+const int8_t kKernMatrix[] = { -5, -7, -2, -3 };
 
-static const EpdFontData kTestFontData = {
+const EpdFontData kTestFontData = {
   .bitmap            = nullptr,
   .glyph             = kGlyphs,
   .intervals         = kIntervals,
@@ -94,62 +73,63 @@ static const EpdFontData kTestFontData = {
   .kernRightClassCount = 2,
   .ligaturePairs     = nullptr,
   .ligaturePairCount = 0,
+  .glyphMissHandler  = nullptr,
+  .glyphMissCtx      = nullptr,
 };
 // clang-format on
 
-static EpdFont testFont(&kTestFontData);
+EpdFont& testFont() {
+  static EpdFont font(&kTestFontData);
+  return font;
+}
 
-// Helper: return width from getTextDimensions
-static int textWidth(const char* str) {
+int textWidth(const char* str) {
   int w = 0, h = 0;
-  testFont.getTextDimensions(str, &w, &h);
+  testFont().getTextDimensions(str, &w, &h);
   return w;
 }
 
-static int textHeight(const char* str) {
+int textHeight(const char* str) {
   int w = 0, h = 0;
-  testFont.getTextDimensions(str, &w, &h);
+  testFont().getTextDimensions(str, &w, &h);
   return h;
 }
+
+// Simulate the old absolute-snap gap for comparison
+int absoluteGap(int32_t startFP, int32_t advanceFP, int32_t kernFP) {
+  int32_t nextFP = startFP + advanceFP + kernFP;
+  return fp4::toPixel(nextFP) - fp4::toPixel(startFP);
+}
+
+}  // namespace
 
 // ============================================================================
 // Part 1: Pure fp4 math tests
 // ============================================================================
 
-// Simulate the old absolute-snap gap for comparison
-static int absoluteGap(int32_t startFP, int32_t advanceFP, int32_t kernFP) {
-  int32_t nextFP = startFP + advanceFP + kernFP;
-  return fp4::toPixel(nextFP) - fp4::toPixel(startFP);
-}
-
-void testFp4Basics() {
-  printf("testFp4Basics...\n");
-
+TEST(Fp4Math, RoundTripIntegerPixels) {
   for (int px = 0; px < 500; px++) {
-    ASSERT_EQ(fp4::toPixel(fp4::fromPixel(px)), px);
+    EXPECT_EQ(fp4::toPixel(fp4::fromPixel(px)), px) << "px=" << px;
   }
-
-  ASSERT_EQ(fp4::toPixel(0), 0);
-  ASSERT_EQ(fp4::toPixel(7), 0);    // 0.4375 -> 0
-  ASSERT_EQ(fp4::toPixel(8), 1);    // 0.5 -> 1 (round half up)
-  ASSERT_EQ(fp4::toPixel(15), 1);   // 0.9375 -> 1
-  ASSERT_EQ(fp4::toPixel(16), 1);   // 1.0 -> 1
-  ASSERT_EQ(fp4::toPixel(24), 2);   // 1.5 -> 2
-  ASSERT_EQ(fp4::toPixel(-8), 0);   // -0.5 -> 0
-  ASSERT_EQ(fp4::toPixel(-9), -1);  // -0.5625 -> -1
-  ASSERT_EQ(fp4::toPixel(-16), -1);
-
-  ASSERT_EQ(fp4::toPixel(137 + (-9)), 8);  // 128 = 8.0 exact
-  ASSERT_EQ(fp4::toPixel(137 + (-5)), 8);  // 132 = 8.25
-  ASSERT_EQ(fp4::toPixel(137 + (-1)), 9);  // 136 = 8.5 (half rounds up)
-
-  printf("  All fp4 basics passed\n");
-  PASS();
 }
 
-void testOldApproachInconsistency() {
-  printf("testOldApproachInconsistency...\n");
+TEST(Fp4Math, RoundingBoundaries) {
+  EXPECT_EQ(fp4::toPixel(0), 0);
+  EXPECT_EQ(fp4::toPixel(7), 0);    // 0.4375 -> 0
+  EXPECT_EQ(fp4::toPixel(8), 1);    // 0.5 -> 1 (round half up)
+  EXPECT_EQ(fp4::toPixel(15), 1);   // 0.9375 -> 1
+  EXPECT_EQ(fp4::toPixel(16), 1);   // 1.0 -> 1
+  EXPECT_EQ(fp4::toPixel(24), 2);   // 1.5 -> 2
+  EXPECT_EQ(fp4::toPixel(-8), 0);   // -0.5 -> 0
+  EXPECT_EQ(fp4::toPixel(-9), -1);  // -0.5625 -> -1
+  EXPECT_EQ(fp4::toPixel(-16), -1);
 
+  EXPECT_EQ(fp4::toPixel(137 + (-9)), 8);  // 128 = 8.0 exact
+  EXPECT_EQ(fp4::toPixel(137 + (-5)), 8);  // 132 = 8.25
+  EXPECT_EQ(fp4::toPixel(137 + (-1)), 9);  // 136 = 8.5 (half rounds up)
+}
+
+TEST(Fp4Math, OldApproachInconsistency) {
   // 'oo' pair: advance=145 (9.0625px), kern=-3 (-0.1875px), combined=142 (8.875px)
   const int32_t advance = 145;
   const int32_t kern = -3;
@@ -164,76 +144,165 @@ void testOldApproachInconsistency() {
     }
   }
 
-  ASSERT_TRUE(maxGap - minGap >= 1);
-  printf("  Old absolute gap range: [%d, %d] -- varies by %d px\n", minGap, maxGap, maxGap - minGap);
-
-  int diffStep = fp4::toPixel(advance + kern);
-  printf("  Differential step: always %d px\n", diffStep);
-  PASS();
+  // Absolute snap produces inconsistent gaps depending on subpixel phase.
+  EXPECT_GE(maxGap - minGap, 1);
 }
 
-void testExhaustiveKernRange() {
-  printf("testExhaustiveKernRange...\n");
-
+TEST(Fp4Math, ExhaustiveKernRange) {
   const int32_t baseAdvance = 128;
-  int checked = 0;
 
   for (int advFrac = 0; advFrac < 16; advFrac++) {
     int32_t advance = baseAdvance + advFrac;
     for (int kern = -128; kern <= 127; kern++) {
       int step = fp4::toPixel(advance + static_cast<int32_t>(kern));
       float idealPx = fp4::toFloat(advance + kern);
-      if (std::abs(step - idealPx) >= 1.0f) {
-        fprintf(stderr, "  FAIL: advance=%d, kern=%d, step=%d, ideal=%.4f\n", advance, kern, step, idealPx);
-        testsFailed++;
-        return;
-      }
-      checked++;
+      EXPECT_LT(std::abs(step - idealPx), 1.0f) << "advance=" << advance << " kern=" << kern;
     }
   }
-
-  printf("  Checked %d (advance, kern) combinations -- all within 1px of ideal\n", checked);
-  PASS();
 }
 
 // ============================================================================
 // Part 2: Integration tests using real EpdFont::getTextDimensions
 // ============================================================================
 
-void testKernLookup() {
-  printf("testKernLookup...\n");
-
-  ASSERT_EQ(testFont.getKerning('T', 'a'), -5);
-  ASSERT_EQ(testFont.getKerning('T', 'o'), -7);
-  ASSERT_EQ(testFont.getKerning('o', 'a'), -2);
-  ASSERT_EQ(testFont.getKerning('o', 'o'), -3);
-  ASSERT_EQ(testFont.getKerning('a', 'o'), 0);  // 'a' has no left class
-  ASSERT_EQ(testFont.getKerning('x', 'o'), 0);  // 'x' has no left class
-  ASSERT_EQ(testFont.getKerning('T', 'x'), 0);  // 'x' has no right class
-  ASSERT_EQ(testFont.getKerning('T', 'T'), 0);  // 'T' has no right class
-
-  printf("  All kern lookups correct\n");
-  PASS();
+TEST(EpdFont, KernLookup) {
+  EXPECT_EQ(testFont().getKerning('T', 'a'), -5);
+  EXPECT_EQ(testFont().getKerning('T', 'o'), -7);
+  EXPECT_EQ(testFont().getKerning('o', 'a'), -2);
+  EXPECT_EQ(testFont().getKerning('o', 'o'), -3);
+  EXPECT_EQ(testFont().getKerning('a', 'o'), 0);  // 'a' has no left class
+  EXPECT_EQ(testFont().getKerning('x', 'o'), 0);  // 'x' has no left class
+  EXPECT_EQ(testFont().getKerning('T', 'x'), 0);  // 'x' has no right class
+  EXPECT_EQ(testFont().getKerning('T', 'T'), 0);  // 'T' has no right class
 }
 
-void testGlyphLookup() {
-  printf("testGlyphLookup...\n");
+// The font above is the DENSE representation, which only SD-card fonts use now. Every built-in
+// font ships the sparse (CSR) form instead, so it needs its own coverage: same pairs, same
+// answers, including the two zero cells that the sparse form stores by omitting them.
+namespace {
+// Dense equivalent, for reference:  [L1,R1]=-5  [L1,R2]=-7  [L2,R1]=-2  [L2,R2]=-3
+// Rows are [rowOffsets[l], rowOffsets[l+1]) and sorted ascending by column.
+const uint16_t kKernRowOffsetsFull[] = {0, 2, 4};
+const uint8_t kKernSparseColsFull[] = {0, 1, 0, 1};
+const int8_t kKernSparseValuesFull[] = {-5, -7, -2, -3};
 
-  ASSERT_TRUE(testFont.getGlyph('T') != nullptr);
-  ASSERT_TRUE(testFont.getGlyph('a') != nullptr);
-  ASSERT_TRUE(testFont.getGlyph('o') != nullptr);
-  ASSERT_TRUE(testFont.getGlyph('x') != nullptr);
-  ASSERT_EQ(testFont.getGlyph('T')->advanceX, 137);
-  ASSERT_EQ(testFont.getGlyph('a')->advanceX, 130);
-  ASSERT_EQ(testFont.getGlyph('o')->advanceX, 145);
-  ASSERT_EQ(testFont.getGlyph('x')->advanceX, 136);
+// A row with a hole: left class 1 keeps only its R2 entry, left class 2 only its R1 entry.
+// This is the case the dense form cannot distinguish from a stored zero, and the one a
+// binary search gets wrong if it does not confirm the key it landed on.
+const uint16_t kKernRowOffsetsSparse[] = {0, 1, 2};
+const uint8_t kKernSparseColsSparse[] = {1, 0};
+const int8_t kKernSparseValuesSparse[] = {-7, -2};
+
+EpdFontData makeSparseFontData(const uint16_t* rowOffsets, const uint8_t* cols, const int8_t* values) {
+  EpdFontData d = kTestFontData;
+  d.kernMatrix = nullptr;  // force the sparse path
+  d.kernRowOffsets = rowOffsets;
+  d.kernSparseCols = cols;
+  d.kernSparseValues = values;
+  return d;
+}
+}  // namespace
+
+TEST(EpdFont, KernLookupSparseMatchesDense) {
+  const EpdFontData sparseData = makeSparseFontData(kKernRowOffsetsFull, kKernSparseColsFull, kKernSparseValuesFull);
+  EpdFont sparse(&sparseData);
+
+  // Every pair the dense font answers, the sparse font must answer identically.
+  for (const uint32_t left : {'T', 'a', 'o', 'x'}) {
+    for (const uint32_t right : {'T', 'a', 'o', 'x'}) {
+      EXPECT_EQ(sparse.getKerning(left, right), testFont().getKerning(left, right))
+          << "pair " << static_cast<char>(left) << static_cast<char>(right);
+    }
+  }
+}
+
+TEST(EpdFont, KernLookupSparseHandlesMissingEntries) {
+  const EpdFontData sparseData =
+      makeSparseFontData(kKernRowOffsetsSparse, kKernSparseColsSparse, kKernSparseValuesSparse);
+  EpdFont sparse(&sparseData);
+
+  EXPECT_EQ(sparse.getKerning('T', 'o'), -7);  // present, and not the first column of its row
+  EXPECT_EQ(sparse.getKerning('o', 'a'), -2);  // present, first column of its row
+  EXPECT_EQ(sparse.getKerning('T', 'a'), 0);   // absent: column below the one stored
+  EXPECT_EQ(sparse.getKerning('o', 'o'), 0);   // absent: column above the one stored
+  EXPECT_EQ(sparse.getKerning('a', 'o'), 0);   // no left class at all
+  EXPECT_EQ(sparse.getKerning('T', 'x'), 0);   // no right class at all
+}
+
+// The class maps above are the PACKED form, which only SD-card fonts use now. Built-in fonts
+// ship the split arrays, so the same coexistence check the matrix gets applies here too.
+namespace {
+const uint16_t kKernLeftCps[] = {0x54, 0x6F};
+const uint8_t kKernLeftIds[] = {1, 2};
+const uint16_t kKernRightCps[] = {0x61, 0x6F};
+const uint8_t kKernRightIds[] = {1, 2};
+
+EpdFontData makeSplitClassFontData() {
+  EpdFontData d = kTestFontData;
+  d.kernLeftClasses = nullptr;  // force the split path
+  d.kernRightClasses = nullptr;
+  d.kernLeftCodepoints = kKernLeftCps;
+  d.kernLeftClassIds = kKernLeftIds;
+  d.kernRightCodepoints = kKernRightCps;
+  d.kernRightClassIds = kKernRightIds;
+  return d;
+}
+}  // namespace
+
+TEST(EpdFont, KernSplitClassMapMatchesPacked) {
+  const EpdFontData splitData = makeSplitClassFontData();
+  EpdFont split(&splitData);
+  for (const uint32_t left : {'T', 'a', 'o', 'x', 'z'}) {
+    for (const uint32_t right : {'T', 'a', 'o', 'x', 'z'}) {
+      EXPECT_EQ(split.getKerning(left, right), testFont().getKerning(left, right))
+          << "pair " << static_cast<char>(left) << static_cast<char>(right);
+    }
+  }
+}
+
+TEST(EpdFont, KernSplitClassMapWithSparseMatrix) {
+  // The combination the built-in fonts actually ship: split class maps AND a sparse matrix.
+  EpdFontData d = makeSplitClassFontData();
+  d.kernMatrix = nullptr;
+  d.kernRowOffsets = kKernRowOffsetsFull;
+  d.kernSparseCols = kKernSparseColsFull;
+  d.kernSparseValues = kKernSparseValuesFull;
+  EpdFont shipped(&d);
+
+  EXPECT_EQ(shipped.getKerning('T', 'a'), -5);
+  EXPECT_EQ(shipped.getKerning('T', 'o'), -7);
+  EXPECT_EQ(shipped.getKerning('o', 'a'), -2);
+  EXPECT_EQ(shipped.getKerning('o', 'o'), -3);
+  EXPECT_EQ(shipped.getKerning('a', 'o'), 0);  // no left class
+  EXPECT_EQ(shipped.getKerning('T', 'x'), 0);  // no right class
+}
+
+TEST(EpdFont, KernLookupEmptyRowIsZero) {
+  // Left class 1 stores nothing (offsets 0,0) — an empty range must not read past its row.
+  static const uint16_t rowOffsets[] = {0, 0, 1};
+  static const uint8_t cols[] = {0};
+  static const int8_t values[] = {-2};
+  const EpdFontData sparseData = makeSparseFontData(rowOffsets, cols, values);
+  EpdFont sparse(&sparseData);
+
+  EXPECT_EQ(sparse.getKerning('T', 'a'), 0);
+  EXPECT_EQ(sparse.getKerning('T', 'o'), 0);
+  EXPECT_EQ(sparse.getKerning('o', 'a'), -2);
+}
+
+TEST(EpdFont, GlyphLookup) {
+  ASSERT_NE(testFont().getGlyph('T'), nullptr);
+  ASSERT_NE(testFont().getGlyph('a'), nullptr);
+  ASSERT_NE(testFont().getGlyph('o'), nullptr);
+  ASSERT_NE(testFont().getGlyph('x'), nullptr);
+  EXPECT_EQ(testFont().getGlyph('T')->advanceX, 137);
+  EXPECT_EQ(testFont().getGlyph('a')->advanceX, 130);
+  EXPECT_EQ(testFont().getGlyph('o')->advanceX, 145);
+  EXPECT_EQ(testFont().getGlyph('x')->advanceX, 136);
 
   // No U+FFFD in font, so unknown codepoints return nullptr
-  ASSERT_TRUE(testFont.getGlyph('Z') == nullptr);
-  ASSERT_TRUE(testFont.getGlyph('b') == nullptr);
-
-  printf("  All glyph lookups correct\n");
-  PASS();
+  EXPECT_EQ(testFont().getGlyph('Z'), nullptr);
+  EXPECT_EQ(testFont().getGlyph('b'), nullptr);
 }
 
 // Known-value regression tests.  Expected widths are computed by hand using
@@ -245,45 +314,32 @@ void testGlyphLookup() {
 //
 // Differential step from glyph A to glyph B:
 //   step = fp4::toPixel(advanceA + kern(A,B))
-void testKnownWidths() {
-  printf("testKnownWidths...\n");
-
-  // "o": single glyph at x=0, width=8
-  //   w = 0 + 8 = 8
-  ASSERT_EQ(textWidth("o"), 8);
+TEST(EpdFont, KnownWidths) {
+  // "o": single glyph at x=0, width=8 -> w = 0 + 8 = 8
+  EXPECT_EQ(textWidth("o"), 8);
 
   // "oo": step = toPixel(145 + (-3)) = toPixel(142) = 9
   //   o1 at 0, o2 at 9.  w = 9 + 8 = 17
-  ASSERT_EQ(textWidth("oo"), 17);
+  EXPECT_EQ(textWidth("oo"), 17);
 
-  // "ooo": two steps of 9
-  //   o1 at 0, o2 at 9, o3 at 18.  w = 18 + 8 = 26
-  ASSERT_EQ(textWidth("ooo"), 26);
+  // "ooo": two steps of 9 -> o3 at 18, w = 18 + 8 = 26
+  EXPECT_EQ(textWidth("ooo"), 26);
 
-  // "To": step = toPixel(137 + (-7)) = toPixel(130) = 8
-  //   T at 0, o at 8.  w = 8 + 8 = 16
-  ASSERT_EQ(textWidth("To"), 16);
+  // "To": step = toPixel(137 + (-7)) = 8 -> o at 8, w = 8 + 8 = 16
+  EXPECT_EQ(textWidth("To"), 16);
 
-  // "Ta": step = toPixel(137 + (-5)) = toPixel(132) = 8
-  //   T at 0, a at 8.  w = 8 + 7 = 15
-  ASSERT_EQ(textWidth("Ta"), 15);
+  // "Ta": step = toPixel(137 + (-5)) = 8 -> a at 8, w = 8 + 7 = 15
+  EXPECT_EQ(textWidth("Ta"), 15);
 
-  // "oa": step = toPixel(145 + (-2)) = toPixel(143) = 9
-  //   o at 0, a at 9.  w = 9 + 7 = 16
-  ASSERT_EQ(textWidth("oa"), 16);
+  // "oa": step = toPixel(145 + (-2)) = 9 -> a at 9, w = 9 + 7 = 16
+  EXPECT_EQ(textWidth("oa"), 16);
 
-  // "Too": T at 0.
-  //   step T->o = toPixel(137 + (-7)) = 8.  o1 at 8.
-  //   step o->o = toPixel(145 + (-3)) = 9.  o2 at 17.
-  //   w = 17 + 8 = 25
-  ASSERT_EQ(textWidth("Too"), 25);
+  // "Too": T at 0, o1 at 8 (T->o step), o2 at 17 (o->o step). w = 17 + 8 = 25
+  EXPECT_EQ(textWidth("Too"), 25);
 
-  // "xo": step = toPixel(136 + 0) = toPixel(136) = 9  (no kern: x has no left class)
+  // "xo": step = toPixel(136 + 0) = 9 (no kern: x has no left class)
   //   x at 0, o at 9.  w = 9 + 8 = 17
-  ASSERT_EQ(textWidth("xo"), 17);
-
-  printf("  All known widths correct\n");
-  PASS();
+  EXPECT_EQ(textWidth("xo"), 17);
 }
 
 // "oo" pair consistency: the pixel gap between two o's must be the same
@@ -291,9 +347,7 @@ void testKnownWidths() {
 // differential rounding.  With absolute snapping, "xoo" would produce a
 // different oo gap than "oo" because 'x' advance (136 FP) puts the first
 // 'o' at fractional phase 8, crossing the rounding boundary differently.
-void testPairConsistencyViaFont() {
-  printf("testPairConsistencyViaFont...\n");
-
+TEST(EpdFont, PairConsistencyViaFont) {
   // The oo gap = width(prefix + "oo") - width(prefix + "o")
   // This isolates the pixel distance contributed by the second 'o'.
   const int oo_gap_bare = textWidth("oo") - textWidth("o");
@@ -301,81 +355,33 @@ void testPairConsistencyViaFont() {
   const int oo_gap_after_T = textWidth("Too") - textWidth("To");
   const int oo_gap_after_o = textWidth("ooo") - textWidth("oo");
 
-  printf("  oo gap (bare):    %d\n", oo_gap_bare);
-  printf("  oo gap (after x): %d\n", oo_gap_after_x);
-  printf("  oo gap (after T): %d\n", oo_gap_after_T);
-  printf("  oo gap (after o): %d\n", oo_gap_after_o);
-
-  // All must be identical
-  ASSERT_EQ(oo_gap_after_x, oo_gap_bare);
-  ASSERT_EQ(oo_gap_after_T, oo_gap_bare);
-  ASSERT_EQ(oo_gap_after_o, oo_gap_bare);
-
-  printf("  All oo gaps identical (%d px) regardless of prefix\n", oo_gap_bare);
-  PASS();
+  EXPECT_EQ(oo_gap_after_x, oo_gap_bare);
+  EXPECT_EQ(oo_gap_after_T, oo_gap_bare);
+  EXPECT_EQ(oo_gap_after_o, oo_gap_bare);
 }
 
 // Null-glyph handling: when a codepoint has no glyph (and no replacement
 // glyph), the pending advance from the previous glyph must still be flushed.
 // Without the flush fix, the glyph after the null would overlap the one before.
-void testNullGlyphAdvancePreserved() {
-  printf("testNullGlyphAdvancePreserved...\n");
-
+TEST(EpdFont, NullGlyphAdvancePreserved) {
   // 'Z' (0x5A) is not in our font and there's no U+FFFD, so getGlyph returns null.
   // "oZo" should lay out as: o1 at 0, Z skipped (advance flushed), o2 at 9.
   //   toPixel(145) = 9 (o's advance, no kern since Z resets prevCp).
   //   w = 9 + 8 = 17
-  int w = textWidth("oZo");
-  printf("  width(\"oZo\") = %d\n", w);
-
-  // Without the flush fix, o2 would land at 0 (overlapping o1), giving w = 8.
-  ASSERT_TRUE(w > 8);
-  ASSERT_EQ(w, 17);
+  EXPECT_EQ(textWidth("oZo"), 17);
 
   // Multi-null: "oZZo" -- two consecutive nulls, advance still preserved.
-  w = textWidth("oZZo");
-  printf("  width(\"oZZo\") = %d\n", w);
-  ASSERT_EQ(w, 17);
+  EXPECT_EQ(textWidth("oZZo"), 17);
 
   // Null at start: "Zo" -- no pending advance to flush, o renders at 0.
-  w = textWidth("Zo");
-  printf("  width(\"Zo\") = %d\n", w);
-  ASSERT_EQ(w, 8);
-
-  printf("  Null-glyph advance correctly preserved\n");
-  PASS();
+  EXPECT_EQ(textWidth("Zo"), 8);
 }
 
-void testHeightCalculation() {
-  printf("testHeightCalculation...\n");
-
+TEST(EpdFont, HeightCalculation) {
   // 'T' is tallest: top=12, height=12 -> extent [0, 12)
   // 'o' and 'a': top=8, height=8 -> extent [0, 8)
-  ASSERT_EQ(textHeight("o"), 8);
-  ASSERT_EQ(textHeight("T"), 12);
-  ASSERT_EQ(textHeight("To"), 12);
-  ASSERT_EQ(textHeight("oo"), 8);
-
-  printf("  All heights correct\n");
-  PASS();
-}
-
-int main() {
-  printf("=== Differential Rounding Tests ===\n\n");
-
-  // Part 1: Pure fp4 math
-  testFp4Basics();
-  testOldApproachInconsistency();
-  testExhaustiveKernRange();
-
-  // Part 2: Integration tests against real EpdFont
-  testKernLookup();
-  testGlyphLookup();
-  testKnownWidths();
-  testPairConsistencyViaFont();
-  testNullGlyphAdvancePreserved();
-  testHeightCalculation();
-
-  printf("\n=== Results: %d passed, %d failed ===\n", testsPassed, testsFailed);
-  return testsFailed > 0 ? 1 : 0;
+  EXPECT_EQ(textHeight("o"), 8);
+  EXPECT_EQ(textHeight("T"), 12);
+  EXPECT_EQ(textHeight("To"), 12);
+  EXPECT_EQ(textHeight("oo"), 8);
 }

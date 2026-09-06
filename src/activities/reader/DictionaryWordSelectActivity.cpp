@@ -196,6 +196,52 @@ void DictionaryWordSelectActivity::moveWord(const int delta) {
   updateSelectionHighlight();
 }
 
+// Index of the word whose box (with finger-sized slop) contains the touch
+// point; -1 when the touch lands on no word. Boxes never overlap after the
+// slop grows them, at worst they touch, so first hit wins.
+int DictionaryWordSelectActivity::wordAt(const int x, const int y) const {
+  constexpr int SLOP = 4;  // matches the highlight box padding plus finger error
+  const int lineHeight = renderer.getLineHeight(readerFontId);
+  for (int i = 0; i < static_cast<int>(words.size()); i++) {
+    const WordInfo& word = words[i];
+    if (x >= word.screenX - SLOP && x < word.screenX + word.width + SLOP && y >= word.screenY - SLOP &&
+        y < word.screenY + lineHeight + SLOP) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+// Moves the row/word cursor onto `index`. Returns false when the index is out
+// of range or already selected (nothing to repaint).
+bool DictionaryWordSelectActivity::selectWordIndex(const int index) {
+  if (index < 0 || index >= static_cast<int>(words.size())) return false;
+  if (index == selectedWordIndex()) return false;
+  const int row = words[index].row;
+  if (row < 0 || row >= static_cast<int>(rows.size())) return false;
+  const auto& indices = rows[row].wordIndices;
+  for (int i = 0; i < static_cast<int>(indices.size()); ++i) {
+    if (indices[i] == index) {
+      currentRow = row;
+      currentWordInRow = i;
+      return true;
+    }
+  }
+  return false;
+}
+
+void DictionaryWordSelectActivity::cancelSelection() {
+  if (highlightPhraseMode && anchorWordIndex >= 0) {
+    anchorWordIndex = -1;
+    requestUpdate();
+    return;
+  }
+  ActivityResult result;
+  result.isCancelled = true;
+  setResult(std::move(result));
+  finish();
+}
+
 void DictionaryWordSelectActivity::updateSelectionHighlight() {
   if (highlightPhraseMode) {
     requestUpdate();
@@ -491,16 +537,8 @@ void DictionaryWordSelectActivity::lookupSelectedWord() {
 }
 
 void DictionaryWordSelectActivity::loop() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    if (highlightPhraseMode && anchorWordIndex >= 0) {
-      anchorWordIndex = -1;
-      requestUpdate();
-      return;
-    }
-    ActivityResult result;
-    result.isCancelled = true;
-    setResult(std::move(result));
-    finish();
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
+    cancelSelection();
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -508,6 +546,30 @@ void DictionaryWordSelectActivity::loop() {
       confirmHighlightSelection();
     } else {
       lookupSelectedWord();
+    }
+    return;
+  }
+
+  // Touch (upstream): a touch-down moves the highlight to the touched word
+  // (differential repaint); a tap on a word selects and acts on it in one go
+  // (lookup, or anchor/end of a highlight selection).
+  int tx = 0;
+  int ty = 0;
+  if (!rows.empty() && mappedInput.wasScreenTouchDown(tx, ty)) {
+    if (selectWordIndex(wordAt(tx, ty))) {
+      updateSelectionHighlight();
+    }
+    return;
+  }
+  if (!rows.empty() && mappedInput.wasScreenTapped(tx, ty)) {
+    const int hit = wordAt(tx, ty);
+    if (hit >= 0) {
+      selectWordIndex(hit);
+      if (highlightPhraseMode) {
+        confirmHighlightSelection();
+      } else {
+        lookupSelectedWord();
+      }
     }
     return;
   }

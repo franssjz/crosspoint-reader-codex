@@ -17,7 +17,12 @@ void safeCopy(char* dst, size_t dstSize, const char* src, size_t srcLen) {
 ReleaseJsonParser::ReleaseJsonParser()
     : parser(JsonCallbacks{this, sOnKey, sOnString, sOnNumber, sOnBool, sOnNull, sOnObjectStart, sOnObjectEnd,
                            sOnArrayStart, sOnArrayEnd}) {
+  safeCopy(firmwareAssetName, sizeof(firmwareAssetName), "firmware.bin", sizeof("firmware.bin") - 1);
   reset();
+}
+
+void ReleaseJsonParser::setFirmwareAssetName(const char* name) {
+  safeCopy(firmwareAssetName, sizeof(firmwareAssetName), name, strlen(name));
 }
 
 void ReleaseJsonParser::reset() {
@@ -45,14 +50,24 @@ const char* ReleaseJsonParser::getFirmwareUrl() const { return firmwareUrl; }
 size_t ReleaseJsonParser::getFirmwareSize() const { return firmwareSize; }
 
 void ReleaseJsonParser::commitAsset() {
-  char releaseAssetName[48];
-  snprintf(releaseAssetName, sizeof(releaseAssetName), "%s.bin", tagName);
-  const bool isReleaseAsset = tagFound && strcmp(currentAssetName, releaseAssetName) == 0;
-  const bool isLegacyAsset = strcmp(currentAssetName, "firmware.bin") == 0;
+  // CPR-vCodex releases publish tag-named firmware assets. The preferred name is
+  // "<tag>" + the configured asset name with its leading "firmware" stripped:
+  //   "firmware.bin"       -> "<tag>.bin"        (fallback "firmware.bin")
+  //   "firmware-x4pro.bin" -> "<tag>-x4pro.bin"  (fallback "firmware-x4pro.bin")
+  // A tag match always wins; the legacy/upstream name is accepted only while
+  // nothing has been found yet.
+  static constexpr char kFirmwarePrefix[] = "firmware";
+  static constexpr size_t kFirmwarePrefixLen = sizeof(kFirmwarePrefix) - 1;
+  const char* suffix = firmwareAssetName;
+  if (strncmp(suffix, kFirmwarePrefix, kFirmwarePrefixLen) == 0) {
+    suffix += kFirmwarePrefixLen;
+  }
+  char preferredAssetName[sizeof(tagName) + sizeof(firmwareAssetName)];
+  snprintf(preferredAssetName, sizeof(preferredAssetName), "%s%s", tagName, suffix);
 
-  // CPR-vCodex releases publish tag-named firmware assets. Keep accepting
-  // upstream's legacy firmware.bin name as a fallback, but prefer the tag match.
-  if (isReleaseAsset || (isLegacyAsset && !firmwareFound)) {
+  const bool isPreferredAsset = tagFound && strcmp(currentAssetName, preferredAssetName) == 0;
+  const bool isLegacyAsset = strcmp(currentAssetName, firmwareAssetName) == 0;
+  if (isPreferredAsset || (isLegacyAsset && !firmwareFound)) {
     memcpy(firmwareUrl, currentAssetUrl, sizeof(firmwareUrl));
     firmwareSize = currentAssetSize;
     firmwareFound = true;

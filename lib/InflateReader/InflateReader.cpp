@@ -6,7 +6,7 @@
 #include <type_traits>
 
 namespace {
-constexpr size_t INFLATE_DICT_SIZE = 32768;
+constexpr size_t INFLATE_DICT_SIZE = InflateReader::RING_BYTES;
 }
 
 // Guarantee the cast pattern in the header comment is valid.
@@ -19,10 +19,13 @@ bool InflateReader::init(const bool streaming) {
   deinit();  // free any previously allocated ring buffer and reset state
 
   if (streaming) {
+    // Prefer the lent framebuffer scratch block so a 32KB ring never competes
+    // with the heap's largest free run; fall back to malloc when it is taken.
     ringBuffer = buildscratch::claim(INFLATE_DICT_SIZE);
     ringBufferFromScratch = ringBuffer != nullptr;
     if (!ringBuffer) ringBuffer = static_cast<uint8_t*>(malloc(INFLATE_DICT_SIZE));
     if (!ringBuffer) return false;
+    ownsRing = !ringBufferFromScratch;
     memset(ringBuffer, 0, INFLATE_DICT_SIZE);
   }
 
@@ -30,15 +33,27 @@ bool InflateReader::init(const bool streaming) {
   return true;
 }
 
+bool InflateReader::initWithRing(uint8_t* ring) {
+  deinit();  // free any owned ring buffer and reset state
+  if (!ring) return false;
+  ringBuffer = ring;
+  ownsRing = false;  // caller's buffer: never freed here
+  ringBufferFromScratch = false;
+  memset(ringBuffer, 0, INFLATE_DICT_SIZE);
+  uzlib_uncompress_init(&decomp, ringBuffer, INFLATE_DICT_SIZE);
+  return true;
+}
+
 void InflateReader::deinit() {
   if (ringBuffer) {
     if (ringBufferFromScratch) {
       buildscratch::release(ringBuffer);
-    } else {
+    } else if (ownsRing) {
       free(ringBuffer);
     }
-    ringBuffer = nullptr;
   }
+  ringBuffer = nullptr;
+  ownsRing = false;
   ringBufferFromScratch = false;
   memset(&decomp, 0, sizeof(decomp));
 }

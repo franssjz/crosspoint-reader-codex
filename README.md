@@ -51,7 +51,7 @@ The philosophy of this fork is simple: keep the firmware fast, stable, and focus
 | Item | Value |
 |---|---|
 | Project | `CPR-vCodex` |
-| Device | `Xteink X4` (personally tested); `Xteink X3` UC8253/UC8279d runtime support, with broader physical feedback requested |
+| Device | `Xteink X4` (personally tested); `Xteink X3` UC8253/UC8279d runtime support, with broader physical feedback requested; `Xteink X4 Pro` (ESP32-S3, touch + frontlight) through the separate `x4pro` firmware, validated on hardware with release `1.6.0.1` (boot, sleep/wake, frontlight, touch, Home key, USB Drive, Wi-Fi and HTTPS, web server) |
 | Current release (CPR-vCodex) build | [`1.5.0.24-cpr-vcodex`](https://github.com/franssjz/cpr-vcodex/releases/tag/1.5.0.24-cpr-vcodex) |
 | Release hardware stack | `freeink-sdk` [`a485dc46`](https://github.com/Free-Ink/freeink-sdk/commit/a485dc46ef5fb2283e4bdb674002ddbef97a9268), with runtime X3/X4 and X3 UC8253/UC8279d detection. |
 | Latest SD font package | [`sd-fonts-m1-b4`](https://github.com/franssjz/cpr-vcodex/releases/tag/sd-fonts-m1-b4) |
@@ -59,10 +59,11 @@ The philosophy of this fork is simple: keep the firmware fast, stable, and focus
 | Current release sync | Selected CrossPoint Reader 1.5 changes reviewed through `master` [`95a847c7`](https://github.com/crosspoint-reader/crosspoint-reader/commit/95a847c7210a5060cf0bb5a20fbc855869d735f2) and `develop` [`93d572fc`](https://github.com/crosspoint-reader/crosspoint-reader/commit/93d572fc), plus targeted CrossInk improvements, manually adapted to retain the vCodex band renderer, KOReader profiles, reading statistics, highlights, themes, ruby, Lyra, and SD-card fonts. Release `1.5.0.22` additionally adopts CrossPoint's pinned `freeink-sdk` hardware layer and the isolated SD recovery entry from [`5717374e`](https://github.com/crosspoint-reader/crosspoint-reader/commit/5717374e4be88b3d30f45626bf796ceb3687c836). |
 | Current release focus | Supports original and newer X3 panels through runtime detection, modernizes the X3/X4 hardware layer, and provides a deterministic SD recovery path for USB-locked devices. |
 | Latest release notes | - One firmware selects X4, X3 UC8253, or X3 UC8279d hardware at boot.<br>- Battery, USB wake, GPIO wake, and deep sleep use runtime board profiles while preserving X4's battery latch and X3's RTC/fuel gauge.<br>- Holding `UP + POWER` at wake enters the SD firmware picker directly; the blind-recovery sequence is documented in `USER_GUIDE.md`. |
-| Base firmware line | `CrossPoint Reader 1.5.0` |
+| Base firmware line | `CrossPoint Reader 1.6.0` (upstream `develop` `233f93ff`; next release is `1.6.0.1-cpr-vcodex`) |
 | Latest official commit reviewed | `master` through [`95a847c7`](https://github.com/crosspoint-reader/crosspoint-reader/commit/95a847c7210a5060cf0bb5a20fbc855869d735f2) and `develop` through [`93d572fc`](https://github.com/crosspoint-reader/crosspoint-reader/commit/93d572fc) |
 | Latest official commit incorporated | Release `1.5.0.22` retains the selected CrossPoint Reader changes incorporated through `1.5.0.21`, migrates the hardware layer to CrossPoint's pinned `freeink-sdk`, and restores the isolated SD recovery entry; FUI, settings-persistence, touch, and RTL rewrites remain intentionally deferred. |
 | Intentional upstream exclusions | Unsupported upstream theme variants such as `RoundedRaff` remain out of the supported vCodex theme list; other upstream UI/config changes are adapted selectively to preserve the existing X4 workflow. |
+| Firmware targets | `default`/`gh_release` build the ESP32-C3 binary shared by X4 and X3 (runtime panel detection); `x4pro`/`x4pro-gh_release` build the separate ESP32-S3 binary for the X4 Pro. One tag publishes both `<tag>.bin` and `<tag>-x4pro.bin`. |
 
 ## Froze in Update Complete (Soft Bricked?) — X3 recovery
 
@@ -78,7 +79,7 @@ Affected users have successfully recovered devices running CPR-vCodex `1.5.0.3` 
 
 ## Web tools
 
-- [Auto Flash](https://franssjz.github.io/cpr-vcodex/flash.html) installs the latest CPR-vCodex firmware on ESP32-C3 Xteink X3 and X4 devices from Chrome or Edge using Web Serial. X4 Pro is a distinct ESP32-S3 device and is not currently supported; the flasher recognizes its partition table and stops before writing.
+- [Auto Flash](https://franssjz.github.io/cpr-vcodex/flash.html) installs the latest CPR-vCodex firmware on the Xteink X4, X3 and X4 Pro from Chrome or Edge using Web Serial. Pick the device model on the page: X4 and X3 share the ESP32-C3 image (`<tag>.bin`), the X4 Pro is a distinct ESP32-S3 device with its own `x4pro` firmware (`<tag>-x4pro.bin` on each release). The flasher checks the connected chip against the selected model before writing anything. X4 Pro browser flashing is available once a release ships the `-x4pro` asset and the auto-flash sync has mirrored it; until then the X4 Pro option stays visible but disabled, and you can flash the binary with `esptool`/PlatformIO instead (see [Build from source](#build-from-source)). The ESP32-S3 cannot be reset over USB serial, so after an X4 Pro flash unplug and replug the cable and hold Power to boot.
 - [Reading Stats Editor](https://franssjz.github.io/cpr-vcodex/reading-stats-editor/) edits exported reading stats locally in the browser. No upload, no server.
 - Device web settings treat the KOReader password as write-only: the stored value is never returned to the browser, which only indicates that a password is already configured.
 
@@ -632,7 +633,7 @@ Each packaged dev build now keeps the base firmware line and the local flash ide
 
 Practical values to look at:
 
-- base firmware line: `CrossPoint Reader 1.5.0`
+- base firmware line: `CrossPoint Reader 1.6.0`
 - current release build style: `1.5.0.24-cpr-vcodex`
 - packaged artifact style: `artifacts/<version>-cpr-vcodex.bin`
 
@@ -644,15 +645,19 @@ The incremental `.bNNNN` suffix exists specifically to help distinguish newer fl
 - [Scope](./SCOPE.md)
 - [i18n notes](./docs/i18n.md)
 - [Contributing docs](./docs/contributing/README.md)
+- [Touch and UI development](./docs/contributing/touch-and-ui.md) - how to build screens on the FreeInkUI activity bases (UiListActivity and friends) so they work with both buttons and the X4 Pro touchscreen
+- [Web server usage](./docs/webserver.md) and [endpoints](./docs/webserver-endpoints.md)
+- [SD card fonts](./docs/sd-card-fonts.md) and [dictionaries](./docs/dictionary.md)
 
 ## Build from source
 
 ### Prerequisites
 
-- `PlatformIO Core` (`pio`) or `VS Code + PlatformIO IDE`
+- [pioarduino PlatformIO Core](https://github.com/pioarduino/platformio-core) (`pio`) or `VS Code + pioarduino IDE`
 - Python 3.8+
-- USB-C cable for flashing the ESP32-C3
-- Xteink X4
+- `clang-format` 21 (for contributor formatting checks)
+- USB-C cable supporting data transfer
+- Xteink X4 (ESP32-C3) or Xteink X4 Pro (ESP32-S3)
 - Xteink X3 compatibility has been reported by users, but this maintainer does not have X3 hardware for direct validation
 
 Possible note about X3:
@@ -678,6 +683,27 @@ still pass another environment or job count explicitly:
 .\bin\build-vcodex.ps1 -Environment gh_release_rc -Jobs 2
 ```
 
+The X4 Pro uses a separate ESP32-S3 environment. Build and flash it with:
+
+```bash
+pio run -e x4pro
+pio run -e x4pro -t upload
+```
+
+X4 Pro flashing notes:
+
+- The ESP32-S3 on the X4 Pro cannot be reset over the serial connection the
+  way the C3 boards can. If the upload does not start, unplug the USB cable,
+  plug it back in, and hold the Power button while the upload begins.
+- USB Serial/JTAG is the normal USB personality, so `pio device monitor` works.
+  The USB Drive mode in File Transfer switches the port to mass storage only
+  while that screen is open and reboots back to serial on exit.
+- The X4 Pro binary is not interchangeable with the X4/X3 binary; the device
+  refuses the wrong image when updating from the SD card or over the air, and
+  the browser [Auto Flash](https://franssjz.github.io/cpr-vcodex/flash.html)
+  page refuses to write when the connected chip does not match the selected
+  model.
+
 To verify the `gh_release` environment locally without advancing the release
 counter or rewriting this README:
 
@@ -695,8 +721,11 @@ artifacts/<version>-cpr-vcodex.bin
 
 Versioning rules:
 
-- release builds: `1.5.0.<release>-cpr-vcodex.bin`
-- dev builds: `1.5.0.<release>.dev<build>-cpr-vcodex.bin`
+- release builds: `1.6.0.<release>-cpr-vcodex.bin`
+- dev builds: `1.6.0.<release>.dev<build>-<sha>-cpr-vcodex.bin`
+- X4 Pro builds use the same version numbers with an `-x4pro` suffix on the
+  packaged artifact (`1.6.0.<release>-cpr-vcodex-x4pro.bin`); dev X4 Pro
+  builds also carry `-x4pro` in the firmware version string
 
 Release publishing:
 
@@ -707,13 +736,19 @@ python scripts/pre_release_check.py --tag 1.5.0.24-cpr-vcodex
 ```
 
 - push a stable tag named like `1.5.0.24-cpr-vcodex`
-- the release workflow builds `gh_release`, validates that the packaged artifact
-  name matches the tag, and attaches the flashable `<tag>.bin`, build metadata,
-  and firmware-budget reports to the GitHub Release
+- `pre_release_check.py` dry-runs both `gh_release` and `x4pro-gh_release`,
+  checks each image against its own OTA slot (6,553,600 bytes for the C3,
+  8,257,536 bytes for the X4 Pro), and validates both artifact pairs
+- the release workflow builds `gh_release` and `x4pro-gh_release`, validates
+  that each packaged artifact name matches the tag, and attaches the flashable
+  `<tag>.bin` and `<tag>-x4pro.bin`, their build metadata, and per-board
+  firmware-budget reports (eight assets) to the GitHub Release
 - tagged CI release builds derive the firmware release number from the tag, not
   from a local counter file
-- the auto-flash sync workflow then mirrors that published release asset into
-  `docs/firmware/firmware.bin` and updates `docs/firmware/manifest.json`
+- the auto-flash sync workflow then mirrors the published release assets into
+  `docs/firmware/firmware.bin` and `docs/firmware/firmware-x4pro.bin` and
+  updates `docs/firmware/manifest.json` (`devices.x4`, `devices.x3`,
+  `devices.x4pro`) so the browser flasher serves the right image per model
 
 ## Credits
 

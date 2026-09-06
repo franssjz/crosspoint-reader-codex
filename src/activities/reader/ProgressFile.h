@@ -9,6 +9,26 @@
 
 namespace ProgressFile {
 
+// Writes `len` bytes of reader progress to `finalPath` without ever leaving the
+// canonical file half-written.
+//
+// The bytes go to a temporary `<finalPath>.tmp` first; only once that is fully
+// written and closed is it renamed over the canonical file. An interrupted write
+// (power loss or a crash mid-SPI) therefore damages only the throwaway temp file.
+// Previously a truncate-in-place write that was cut short left progress.bin with
+// a broken FAT cluster chain that the firmware could neither rewrite nor clear,
+// stranding the book on an old page (issue #2275).
+//
+// This is crash-safe, not metadata-atomic: on FAT the replace is remove + rename,
+// two separate directory operations, so a crash between them can leave neither
+// file -- which simply reads as "no saved progress" on next launch, never a
+// corrupt or unclearable file. The point is that the canonical file is never torn.
+//
+// Note: this prevents corruption on a healthy card going forward. It cannot
+// repair an already-corrupted progress.bin -- removing the stale file may itself
+// fail at the FAT level, in which case recovery still requires fsck on a host.
+//
+// Returns true only if the new file is fully in place.
 inline bool writeAtomicPath(const char* moduleName, const std::string& finalPath, const uint8_t* data, size_t len) {
   const std::string tmpPath = finalPath + ".tmp";
 
@@ -30,8 +50,13 @@ inline bool writeAtomicPath(const char* moduleName, const std::string& finalPath
 
     file.flush();
     file.close();
+    // The temp file is closed before the rename below -- SdFat must not rename a
+    // path that still has an open file handle.
   }
 
+  // SdFat's rename does not overwrite an existing destination, so drop the old
+  // canonical file first. The brief window where neither file exists reads as
+  // "no saved progress" on next launch -- never a corrupt, unclearable file.
   Storage.remove(finalPath.c_str());
   if (!Storage.rename(tmpPath.c_str(), finalPath.c_str())) {
     LOG_ERR(moduleName, "Failed to rename temp progress into place: %s", finalPath.c_str());
@@ -42,8 +67,14 @@ inline bool writeAtomicPath(const char* moduleName, const std::string& finalPath
   return true;
 }
 
+// Writes reader progress to `<cachePath>/progress.bin` (see writeAtomicPath).
 inline bool writeAtomic(const char* moduleName, const std::string& cachePath, const uint8_t* data, size_t len) {
   return writeAtomicPath(moduleName, cachePath + "/progress.bin", data, len);
+}
+
+// Upstream-compatible form (module tag "PRG").
+inline bool writeAtomic(const std::string& cachePath, const uint8_t* data, size_t len) {
+  return writeAtomic("PRG", cachePath, data, len);
 }
 
 }  // namespace ProgressFile

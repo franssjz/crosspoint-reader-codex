@@ -58,17 +58,18 @@ void LyraCustomTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, cons
         if (coverPath.empty()) {
           hasCover = false;
         } else {
-          const std::string coverBmpPath = UITheme::getCoverThumbPath(coverPath, LyraCustomMetrics::values.homeCoverHeight);
+          const std::string coverBmpPath =
+              UITheme::getCoverThumbPath(coverPath, LyraCustomMetrics::values.homeCoverHeight);
 
-          FsFile file;
+          HalFile file;
           if (Storage.openFileForRead("HOME", coverBmpPath, file)) {
             Bitmap bitmap(file);
             if (bitmap.parseHeaders() == BmpReaderError::Ok) {
               const float coverHeight = static_cast<float>(bitmap.getHeight());
               const float coverWidth = static_cast<float>(bitmap.getWidth());
               const float ratio = coverWidth / coverHeight;
-              const float tileRatio =
-                  static_cast<float>(tileWidth - 2 * H_PADDING) / static_cast<float>(LyraCustomMetrics::values.homeCoverHeight);
+              const float tileRatio = static_cast<float>(tileWidth - 2 * H_PADDING) /
+                                      static_cast<float>(LyraCustomMetrics::values.homeCoverHeight);
               const float cropX = 1.0f - (tileRatio / ratio);
 
               renderer.drawBitmap(bitmap, tileX + H_PADDING, tileY + H_PADDING, tileWidth - 2 * H_PADDING,

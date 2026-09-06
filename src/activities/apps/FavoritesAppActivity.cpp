@@ -3,119 +3,75 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
-#include <algorithm>
-
 #include "FavoritesBrowserActivity.h"
 #include "FavoritesOrderActivity.h"
+#include "FavoritesStore.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
+#include "components/UiAppHelpers.h"
 #include "util/HeaderDateUtils.h"
 
-namespace {
-constexpr int ACTION_COUNT = 2;
-}  // namespace
+namespace fui = freeink::ui;
 
-void FavoritesAppActivity::refreshEntries() {
-  favoriteCount = static_cast<int>(FAVORITES.getBooks().size());
-  selectedIndex = std::clamp(selectedIndex, 0, ACTION_COUNT - 1);
-}
-
-void FavoritesAppActivity::openSelectedEntry() {
-  if (selectedIndex == 0) {
-    startActivityForResult(std::make_unique<FavoritesBrowserActivity>(renderer, mappedInput),
-                           [this](const ActivityResult&) {
-                             refreshEntries();
-                             requestUpdate();
-                           });
-    return;
-  }
-
-  if (selectedIndex == 1) {
-    startActivityForResult(std::make_unique<FavoritesOrderActivity>(renderer, mappedInput),
-                           [this](const ActivityResult&) {
-                             refreshEntries();
-                             requestUpdate();
-                           });
-    return;
-  }
-}
+void FavoritesAppActivity::refreshEntries() { favoriteCount = static_cast<int>(FAVORITES.getBooks().size()); }
 
 void FavoritesAppActivity::onEnter() {
-  Activity::onEnter();
+  UiListActivity::onEnter();
   refreshEntries();
-  requestUpdate();
+
+  rowItems[0] = fui::ListItem{};
+  rowItems[0].label = tr(STR_BROWSE_FILES);
+  rowItems[0].subtitle = tr(STR_FAVORITES_BROWSER_DESC);
+  rowItems[0].icon = listIconFor(UIIcon::Folder, 32);
+  rowItems[0].actionValue = 0;
+  rowItems[1] = fui::ListItem{};
+  rowItems[1].label = tr(STR_ORDER_FAVORITES);
+  rowItems[1].subtitle = tr(STR_FAVORITES_SORT_DESC);
+  rowItems[1].actionValue = 1;
 }
 
-void FavoritesAppActivity::loop() {
-  const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, true);
-
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    finish();
-    return;
-  }
-
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    openSelectedEntry();
-    return;
-  }
-
-  const int itemCount = ACTION_COUNT;
-  buttonNavigator.onNextRelease([this, itemCount] {
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, itemCount);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousRelease([this, itemCount] {
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, itemCount);
-    requestUpdate();
-  });
-
-  buttonNavigator.onNextContinuous([this, itemCount, pageItems] {
-    selectedIndex = ButtonNavigator::nextPageIndex(selectedIndex, itemCount, pageItems);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousContinuous([this, itemCount, pageItems] {
-    selectedIndex = ButtonNavigator::previousPageIndex(selectedIndex, itemCount, pageItems);
-    requestUpdate();
-  });
-}
-
-void FavoritesAppActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int listHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+void FavoritesAppActivity::drawChrome() {
   const std::string headerSubtitle = std::to_string(favoriteCount);
-
   HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_FAVORITES), headerSubtitle.c_str());
+}
 
-  GUI.drawList(
-      renderer, Rect{0, contentTop, pageWidth, listHeight}, ACTION_COUNT, selectedIndex,
-      [this](const int index) {
-        if (index == 0) return std::string(tr(STR_BROWSE_FILES));
-        if (index == 1) return std::string(tr(STR_ORDER_FAVORITES));
-        return std::string();
-      },
-      [this](const int index) {
-        if (index == 0) return std::string(tr(STR_FAVORITES_BROWSER_DESC));
-        if (index == 1) return std::string(tr(STR_FAVORITES_SORT_DESC));
-        return std::string();
-      },
-      [this](const int index) {
-        if (index == 0) return UIIcon::Folder;
-        if (index == 1) return UIIcon::Settings;
-        return UIIcon::Heart;
-      });
+void FavoritesAppActivity::activateIndex(const int index) {
+  // Both rows open a sub-screen; a lingering flash would gray a row on return.
+  app.clearTapFlash();
+  nav.selected = index;
+  auto onReturn = [this](const ActivityResult&) {
+    refreshEntries();
+    requestUpdate();
+  };
+  if (index == 0) {
+    startActivityForResult(std::make_unique<FavoritesBrowserActivity>(renderer, mappedInput), onReturn);
+  } else if (index == 1) {
+    startActivityForResult(std::make_unique<FavoritesOrderActivity>(renderer, mappedInput), onReturn);
+  }
+}
+
+void FavoritesAppActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
   if (favoriteCount == 0) {
-    renderer.drawCenteredText(SMALL_FONT_ID, contentTop + listHeight - 14, tr(STR_NO_FAVORITES));
+    // Empty-state note pinned above the button hints, below the two rows.
+    fui::TextStyle note = screen.theme().smallText;
+    note.align = fui::TextAlign::Center;
+    const int16_t lh = screen.target().lineHeight(note.font);
+    screen.target().text(screen.takeBottom(lh, static_cast<int16_t>(metrics.verticalSpacing)), tr(STR_NO_FAVORITES),
+                         note);
   }
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+  fui::ListProps props;
+  props.items = rowItems;
+  props.count = static_cast<uint16_t>(ACTION_COUNT);
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
+  fui::TextStyle label = screen.theme().smallText;
+  label.bold = true;
+  props.labelText = label;
+  syncListViewport(screen, props, /*hasSubtitle=*/true);
+  screen.list(props);
 }

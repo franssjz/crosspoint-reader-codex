@@ -2,10 +2,13 @@
 
 #include <Txt.h>
 
+#include <atomic>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "CrossPointSettings.h"
+#include "EndOfBookOptions.h"
 #include "activities/Activity.h"
 
 class TxtReaderActivity final : public Activity {
@@ -42,6 +45,11 @@ class TxtReaderActivity final : public Activity {
   bool waitingForConfirmSecondClick = false;
   unsigned long firstConfirmClickMs = 0UL;
 
+  // End-of-book next-book suggestions (upstream). Built lazily on the render
+  // task; the ready flag is the release/acquire publication point for loop().
+  std::unique_ptr<EndOfBookOptions> endOfBookOptions;
+  std::atomic<bool> endOfBookOptionsReady{false};
+
   // Cached settings for cache validation (different fonts/margins require re-indexing)
   int cachedFontId = 0;
   uint8_t cachedScreenMargin = 0;
@@ -53,6 +61,7 @@ class TxtReaderActivity final : public Activity {
 
   void renderPage();
   void renderStatusBar() const;
+  void renderEndOfBook();
 
   void initializeReader();
   bool loadPageAtOffset(size_t offset, std::vector<TextLine>& outLines, size_t& nextOffset);
@@ -63,14 +72,20 @@ class TxtReaderActivity final : public Activity {
   void loadProgress();
   bool skipPages(int amount);
   bool isAtEndOfBook() const { return initialized && currentPage >= totalPages; }
+  void returnFromEndOfBook();
+  bool endOfBookMenuActive() const;
+  bool handleEndOfBookMenu();
+  void clearEndOfBookOptionsIfNeeded();
+  bool handleBackNavigation();
   void requestCurrentPageFullRefresh();
   void toggleTemporaryStatusBar();
   std::string moveCompletedBookIfEnabled();
   void exitReaderAfterOptionalCompletedMove();
+  void finishBookAndExit();
 
  public:
-  explicit TxtReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Txt> txt)
-      : Activity("TxtReader", renderer, mappedInput), txt(std::move(txt)) {}
+  explicit TxtReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Txt> txt,
+                             bool allowFastInitialRefresh = false);
   void onEnter() override;
   void onExit() override;
   void loop() override;

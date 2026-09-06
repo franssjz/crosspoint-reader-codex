@@ -3,22 +3,29 @@
 #include <string>
 #include <vector>
 
-#include "../Activity.h"
-#include "util/ButtonNavigator.h"
+#include "activities/UiListActivity.h"
 
-class SleepAppActivity final : public Activity {
-  ButtonNavigator buttonNavigator;
+// Sleep-image app: a sleep-order row (activate cycles shuffle/sequential)
+// followed by one row per sleep-image directory (activate opens its preview).
+class SleepAppActivity final : public UiListActivity {
   std::vector<std::string> directories;
-  int selectedIndex = 0;
+  std::vector<std::string> rowLabels;
+  std::vector<freeink::ui::ListItem> rowItems;
 
   void loadDirectories();
-  void openSelectedDirectory();
+  void rebuildRows();
+  void openDirectory(int index);
+
+  int listCount() const override { return static_cast<int>(rowItems.size()); }
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  void drawChrome() override;
+  void drawFooter() override;
 
  public:
   explicit SleepAppActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("SleepApp", renderer, mappedInput) {}
+      : UiListActivity("SleepApp", renderer, mappedInput) {}
 
   void onEnter() override;
-  void loop() override;
-  void render(RenderLock&&) override;
+  void onExit() override;
 };

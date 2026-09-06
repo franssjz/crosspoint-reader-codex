@@ -34,7 +34,10 @@ namespace {
 // v46: TextBlock records layout-inserted hyphens for reflow-stable highlights.
 // v47: image format/size policy changed; rebuild cached placeholder decisions.
 // v48: inline image metadata probing no longer falls back solely on fragmented heap.
-constexpr uint8_t SECTION_FILE_VERSION = 48;
+// v49: merged upstream develop (BiDi/RTL layout, per-page internal-link rectangles,
+//      direction in serialized BlockStyle); strictly above both lineages (fork 48,
+//      upstream 45) so every existing cache rebuilds once.
+constexpr uint8_t SECTION_FILE_VERSION = 49;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -366,8 +369,19 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
 
   if (spec.embeddedStyle) {
     ctx->cssParser = epub->getCssParser();
-    if (ctx->cssParser && !ctx->cssParser->loadFromCache()) {
-      LOG_ERR("SCT", "Failed to load CSS from cache");
+    if (ctx->cssParser) {
+      const CssParser::CacheLoadResult cacheResult = ctx->cssParser->loadFromCache();
+      if (cacheResult == CssParser::CacheLoadResult::LowMemory) {
+        LOG_ERR("SCT", "Insufficient heap to hydrate CSS; section build deferred");
+        ctx->cssParser->clear();
+        file.close();
+        Storage.remove(binTmpPath().c_str());
+        if (!ctx->reusedHtml) Storage.remove(ctx->tmpHtmlPath.c_str());
+        return false;
+      }
+      if (cacheResult == CssParser::CacheLoadResult::Invalid) {
+        LOG_ERR("SCT", "Failed to load CSS from cache");
+      }
     }
   }
 

@@ -3526,7 +3526,14 @@ static const EpdFontData notosans_10_bold = {
     nullptr,
     notosans_10_boldKernLeftClasses,
     notosans_10_boldKernRightClasses,
+    nullptr,  // kernLeftCodepoints: this font keeps the packed class maps above
+    nullptr,  // kernLeftClassIds
+    nullptr,  // kernRightCodepoints
+    nullptr,  // kernRightClassIds
     notosans_10_boldKernMatrix,
+    nullptr,  // kernRowOffsets: this font keeps the dense matrix above
+    nullptr,  // kernSparseCols
+    nullptr,  // kernSparseValues
     478,
     474,
     88,

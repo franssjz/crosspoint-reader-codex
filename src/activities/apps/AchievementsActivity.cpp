@@ -7,14 +7,13 @@
 #include <string>
 #include <vector>
 
+#include "MappedInputManager.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
 #include "util/HeaderDateUtils.h"
 
-namespace {
-constexpr int ROW_HEIGHT = 56;
-constexpr int ICON_BOX_SIZE = 24;
+namespace fui = freeink::ui;
 
+namespace {
 std::string formatDurationCompact(const uint64_t totalMs) {
   const uint64_t totalMinutes = totalMs / 60000ULL;
   const uint64_t hours = totalMinutes / 60ULL;
@@ -39,36 +38,14 @@ std::string getProgressLabel(const AchievementView& view) {
   }
 }
 
-const char* tabLabel(const bool completed) { return completed ? tr(STR_COMPLETED) : tr(STR_PENDING); }
+const char* tabLabelFor(const bool completed) { return completed ? tr(STR_COMPLETED) : tr(STR_PENDING); }
 
 std::string tabLabelWithCount(const bool completed, const int count) {
-  return std::string(tabLabel(completed)) + " (" + std::to_string(count) + ")";
+  return std::string(tabLabelFor(completed)) + " (" + std::to_string(count) + ")";
 }
 
 const char* emptyStateLabel(const bool completed) {
   return completed ? tr(STR_NO_COMPLETED_ACHIEVEMENTS) : tr(STR_NO_PENDING_ACHIEVEMENTS);
-}
-
-void drawLockIcon(GfxRenderer& renderer, const int x, const int y, const bool inverted) {
-  renderer.drawRect(x + 5, y + 9, 14, 11, inverted);
-  renderer.drawLine(x + 8, y + 9, x + 8, y + 6, inverted);
-  renderer.drawLine(x + 15, y + 9, x + 15, y + 6, inverted);
-  renderer.drawLine(x + 8, y + 6, x + 10, y + 4, inverted);
-  renderer.drawLine(x + 10, y + 4, x + 13, y + 4, inverted);
-  renderer.drawLine(x + 13, y + 4, x + 15, y + 6, inverted);
-  renderer.fillRect(x + 11, y + 13, 2, 4, inverted);
-}
-
-void drawTrophyIcon(GfxRenderer& renderer, const int x, const int y, const bool inverted) {
-  renderer.drawRect(x + 7, y + 4, 10, 8, inverted);
-  renderer.drawLine(x + 7, y + 6, x + 5, y + 6, inverted);
-  renderer.drawLine(x + 5, y + 6, x + 5, y + 10, inverted);
-  renderer.drawLine(x + 17, y + 6, x + 19, y + 6, inverted);
-  renderer.drawLine(x + 19, y + 6, x + 19, y + 10, inverted);
-  renderer.drawLine(x + 10, y + 12, x + 10, y + 16, inverted);
-  renderer.drawLine(x + 14, y + 12, x + 14, y + 16, inverted);
-  renderer.drawLine(x + 8, y + 18, x + 16, y + 18, inverted);
-  renderer.drawLine(x + 9, y + 16, x + 15, y + 16, inverted);
 }
 }  // namespace
 
@@ -92,8 +69,43 @@ void AchievementsActivity::rebuildVisibleIndexes() {
     }
   }
 
-  if (selectedIndex >= static_cast<int>(visibleIndexes.size())) {
-    selectedIndex = std::max(0, static_cast<int>(visibleIndexes.size()) - 1);
+  int pendingCount = 0;
+  int completedCount = 0;
+  for (const auto& achievement : achievements) {
+    if (achievement.state.unlocked) {
+      ++completedCount;
+    } else {
+      ++pendingCount;
+    }
+  }
+  tabLabels[0] = tabLabelWithCount(false, pendingCount);
+  tabLabels[1] = tabLabelWithCount(true, completedCount);
+
+  rebuildRowItems();
+}
+
+// Derives the row cache from visibleIndexes. Called from
+// rebuildVisibleIndexes(), never from buildScreen().
+void AchievementsActivity::rebuildRowItems() {
+  rowTexts.clear();
+  rowItems.clear();
+  rowTexts.reserve(visibleIndexes.size());
+  rowItems.reserve(visibleIndexes.size());
+  for (const int index : visibleIndexes) {
+    const auto& entry = achievements[static_cast<size_t>(index)];
+    RowText text;
+    text.title = ACHIEVEMENTS.getTitle(entry.definition->id);
+    text.description = ACHIEVEMENTS.getDescription(entry.definition->id);
+    text.progress = getProgressLabel(entry);
+    rowTexts.push_back(std::move(text));
+  }
+  for (size_t i = 0; i < rowTexts.size(); ++i) {
+    fui::ListItem item;
+    item.label = rowTexts[i].title.c_str();
+    item.subtitle = rowTexts[i].description.c_str();
+    item.value = rowTexts[i].progress.c_str();
+    item.actionValue = static_cast<int16_t>(i);
+    rowItems.push_back(item);
   }
 }
 
@@ -104,11 +116,14 @@ void AchievementsActivity::refreshEntries() {
 }
 
 void AchievementsActivity::onEnter() {
-  Activity::onEnter();
+  selectedTab = FilterTab::Pending;  // before the base resets activeNav(), which indexes by tab
+  UiTabListActivity::onEnter();
   renderer.requestNextRefresh(HalDisplay::HALF_REFRESH);
-  waitForConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
   refreshEntries();
-  requestUpdate();
+  // Legacy screen opened with the first row highlighted (ring 1); the tab band
+  // (ring 0) is still reachable by Confirm / tap.
+  activeNav().selected = visibleIndexes.empty() ? 0 : 1;
+  activeNav().top = 0;
 }
 
 void AchievementsActivity::onExit() {
@@ -116,132 +131,90 @@ void AchievementsActivity::onExit() {
   Activity::onExit();
 }
 
-void AchievementsActivity::loop() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    finish();
-    return;
-  }
-
-  if (waitForConfirmRelease) {
-    if (!mappedInput.isPressed(MappedInputManager::Button::Confirm)) {
-      waitForConfirmRelease = false;
-    }
-    return;
-  }
-
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    selectedTab = (selectedTab == FilterTab::Pending) ? FilterTab::Completed : FilterTab::Pending;
-    selectedIndex = 0;
-    rebuildVisibleIndexes();
-    requestUpdate();
-    return;
-  }
-
-  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right, MappedInputManager::Button::Down}, [this] {
-    if (visibleIndexes.empty()) {
-      return;
-    }
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, static_cast<int>(visibleIndexes.size()));
-    requestUpdate();
-  });
-
-  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left, MappedInputManager::Button::Up}, [this] {
-    if (visibleIndexes.empty()) {
-      return;
-    }
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, static_cast<int>(visibleIndexes.size()));
-    requestUpdate();
-  });
+void AchievementsActivity::switchTab(const FilterTab tab) {
+  RenderLock lock(*this);
+  selectedTab = tab;
+  rebuildVisibleIndexes();  // may fall back to the other tab when this one is empty
+  activeNav().top = 0;
+  activeNav().selected = visibleIndexes.empty() ? 0 : 1;
 }
 
-void AchievementsActivity::render(RenderLock&&) {
-  renderer.clearScreen();
+void AchievementsActivity::onTabAction(const int index) {
+  switchTab(static_cast<FilterTab>(index));
+  // The switched-to tab repaints as the selected pill; a flash overlay on top
+  // of it just repaints the pill in the focused style.
+  app.clearTapFlash();
+  requestUpdate();
+}
 
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const int tabY = metrics.topPadding + metrics.headerHeight;
-  const int contentTop = tabY + metrics.tabBarHeight + metrics.verticalSpacing;
-  const int viewportHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  const int sidePadding = metrics.contentSidePadding;
-  const int rowWidth = pageWidth - sidePadding * 2;
+void AchievementsActivity::stepTab(int /*direction*/) {
+  switchTab(selectedTab == FilterTab::Pending ? FilterTab::Completed : FilterTab::Pending);
+  requestUpdate();
+}
 
-  HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_ACHIEVEMENTS));
-
-  int pendingCount = 0;
-  int completedCount = 0;
-  for (const auto& achievement : achievements) {
-    if (achievement.state.unlocked) {
-      ++completedCount;
-    } else {
-      ++pendingCount;
-    }
+bool AchievementsActivity::handleButtons() {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    finish();
+    return true;
   }
 
-  const std::string pendingTab = tabLabelWithCount(false, pendingCount);
-  const std::string completedTab = tabLabelWithCount(true, completedCount);
-  const std::vector<TabInfo> tabs = {
-      {pendingTab.c_str(), selectedTab == FilterTab::Pending},
-      {completedTab.c_str(), selectedTab == FilterTab::Completed},
-  };
-  GUI.drawTabBar(renderer, Rect{0, tabY, pageWidth, metrics.tabBarHeight}, tabs, false);
+  // Confirm always toggles the tab (legacy semantics), wherever the ring is.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    stepTab(1);
+    return true;
+  }
+  return false;
+}
+
+void AchievementsActivity::navigateButtons() {
+  const int count = listCount();
+  if (count <= 0) {
+    return;
+  }
+  // Ring 1..count with wrap (rows only), press + hold-repeat like the legacy
+  // screen; a ring at 0 (tab band) steps onto the first/last row.
+  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right, MappedInputManager::Button::Down},
+                                       [this, count] {
+                                         const int row = ringPos() - 1;
+                                         moveRingTo(row < 0 ? 1 : ButtonNavigator::nextIndex(row, count) + 1);
+                                       });
+  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left, MappedInputManager::Button::Up},
+                                       [this, count] {
+                                         const int row = ringPos() - 1;
+                                         moveRingTo(row < 0 ? count : ButtonNavigator::previousIndex(row, count) + 1);
+                                       });
+}
+
+void AchievementsActivity::drawChrome() { HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_ACHIEVEMENTS)); }
+
+void AchievementsActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  // Content below the header band, above the button hints.
+  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+
+  buildTabBar(screen);
 
   if (visibleIndexes.empty()) {
-    renderer.drawCenteredText(UI_12_FONT_ID, contentTop + viewportHeight / 2 - 12,
-                              emptyStateLabel(selectedTab == FilterTab::Completed));
-  } else {
-    int firstVisibleIndex = 0;
-    const int maxVisibleRows = std::max(1, viewportHeight / ROW_HEIGHT);
-    if (selectedIndex >= maxVisibleRows) {
-      firstVisibleIndex = selectedIndex - maxVisibleRows + 1;
-    }
-
-    int currentY = contentTop;
-    for (int visibleIndex = firstVisibleIndex; visibleIndex < static_cast<int>(visibleIndexes.size()); ++visibleIndex) {
-      if (currentY + ROW_HEIGHT > contentTop + viewportHeight) {
-        break;
-      }
-
-      const auto& entry = achievements[visibleIndexes[visibleIndex]];
-      const bool selected = visibleIndex == selectedIndex;
-      const Rect rowRect{sidePadding, currentY, rowWidth, ROW_HEIGHT - 4};
-      if (selected) {
-        renderer.fillRectDither(rowRect.x, rowRect.y, rowRect.width, rowRect.height, Color::LightGray);
-        renderer.drawRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height);
-      }
-
-      const int iconX = rowRect.x + 10;
-      const int iconY = rowRect.y + (rowRect.height - ICON_BOX_SIZE) / 2;
-      if (entry.state.unlocked) {
-        drawTrophyIcon(renderer, iconX, iconY, true);
-      } else {
-        drawLockIcon(renderer, iconX, iconY, true);
-      }
-
-      const std::string title = ACHIEVEMENTS.getTitle(entry.definition->id);
-      const std::string description = ACHIEVEMENTS.getDescription(entry.definition->id);
-      const std::string progress = getProgressLabel(entry);
-      const int progressWidth = renderer.getTextWidth(UI_10_FONT_ID, progress.c_str(), EpdFontFamily::REGULAR);
-      const int textX = iconX + ICON_BOX_SIZE + 12;
-      const int textWidth = rowRect.width - (textX - rowRect.x) - progressWidth - 18;
-
-      const std::string truncatedTitle =
-          renderer.truncatedText(UI_10_FONT_ID, title.c_str(), textWidth, EpdFontFamily::BOLD);
-      const std::string truncatedDescription =
-          renderer.truncatedText(SMALL_FONT_ID, description.c_str(), textWidth, EpdFontFamily::REGULAR);
-
-      renderer.drawText(UI_10_FONT_ID, textX, rowRect.y + 8, truncatedTitle.c_str(), true, EpdFontFamily::BOLD);
-      renderer.drawText(SMALL_FONT_ID, textX, rowRect.y + 29, truncatedDescription.c_str(), true,
-                        EpdFontFamily::REGULAR);
-      renderer.drawText(UI_10_FONT_ID, rowRect.x + rowRect.width - progressWidth - 10, rowRect.y + 18,
-                        progress.c_str(), true, EpdFontFamily::REGULAR);
-
-      currentY += ROW_HEIGHT;
-    }
+    screen.centeredText(emptyStateLabel(selectedTab == FilterTab::Completed), screen.theme().bodyText);
+    return;
   }
 
-  const std::string nextTabLabel = tabLabel(selectedTab == FilterTab::Pending);
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), nextTabLabel.c_str(), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  fui::ListProps props;
+  props.items = rowItems.data();
+  props.count = static_cast<uint16_t>(rowItems.size());
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
+  props.valueInset = 8;
+  fui::TextStyle label = screen.theme().smallText;
+  label.bold = true;
+  props.labelText = label;
+  syncTabListViewport(screen, props, /*hasSubtitle=*/true);
+  screen.list(props);
+}
+
+void AchievementsActivity::drawFooter() {
+  const char* nextTabLabel = tabLabelFor(selectedTab == FilterTab::Pending);
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), nextTabLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
 }

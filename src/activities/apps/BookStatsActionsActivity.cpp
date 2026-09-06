@@ -17,8 +17,9 @@
 #include "util/HeaderDateUtils.h"
 #include "util/TimeUtils.h"
 
+namespace fui = freeink::ui;
+
 namespace {
-constexpr int ACTION_COUNT = 3;
 constexpr int ACTION_ADJUST_READING_TIME = 0;
 constexpr int ACTION_MODIFY_START_DATE = 1;
 constexpr int ACTION_RESET_BOOK_STATS = 2;
@@ -36,21 +37,27 @@ uint32_t getInitialStartDateDayOrdinal(const std::string& bookPath) {
 }  // namespace
 
 void BookStatsActionsActivity::onEnter() {
-  Activity::onEnter();
-  selectedIndex = ACTION_ADJUST_READING_TIME;
+  UiListActivity::onEnter();
+  nav.selected = ACTION_ADJUST_READING_TIME;
   startDateApplyFailed = false;
   waitForConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
-  requestUpdate();
+
+  const StrId labels[ACTION_COUNT] = {StrId::STR_ADJUST_READING_TIME, StrId::STR_MODIFY_START_DATE,
+                                      StrId::STR_RESET_THIS_BOOK_STATS};
+  for (int i = 0; i < ACTION_COUNT; ++i) {
+    rowItems[i] = fui::ListItem{};
+    rowItems[i].label = I18N.get(labels[i]);
+    rowItems[i].actionValue = static_cast<int16_t>(i);
+  }
 }
 
 void BookStatsActionsActivity::openAdjustment() {
-  startActivityForResult(
-      std::make_unique<BookReadingAdjustmentActivity>(renderer, mappedInput, bookPath, bookTitle),
-      [this](const ActivityResult&) {
-        ActivityResult result;
-        setResult(std::move(result));
-        finish();
-      });
+  startActivityForResult(std::make_unique<BookReadingAdjustmentActivity>(renderer, mappedInput, bookPath, bookTitle),
+                         [this](const ActivityResult&) {
+                           ActivityResult result;
+                           setResult(std::move(result));
+                           finish();
+                         });
 }
 
 void BookStatsActionsActivity::openStartDateSelection() {
@@ -97,76 +104,73 @@ void BookStatsActionsActivity::guardConfirmReturn() {
                           mappedInput.wasReleased(MappedInputManager::Button::Confirm);
 }
 
-void BookStatsActionsActivity::loop() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    finish();
-    return;
-  }
-
+bool BookStatsActionsActivity::handleCustomInput() {
   if (waitForConfirmRelease) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      finish();
+      return true;
+    }
     if (!mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
         !mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       waitForConfirmRelease = false;
     }
-    return;
+    return true;
   }
-
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (selectedIndex == ACTION_ADJUST_READING_TIME) {
-      openAdjustment();
-      return;
-    }
-    if (selectedIndex == ACTION_MODIFY_START_DATE) {
-      openStartDateSelection();
-      return;
-    }
-    confirmResetBookStats();
-    return;
+  // Moving the selection clears the start-date failure hint (not consumed).
+  if (startDateApplyFailed && (mappedInput.wasReleased(MappedInputManager::Button::NavNext) ||
+                               mappedInput.wasReleased(MappedInputManager::Button::NavPrevious))) {
+    startDateApplyFailed = false;
   }
-
-  buttonNavigator.onNextRelease([this] {
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, ACTION_COUNT);
-    startDateApplyFailed = false;
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousRelease([this] {
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, ACTION_COUNT);
-    startDateApplyFailed = false;
-    requestUpdate();
-  });
+  return false;
 }
 
-void BookStatsActionsActivity::render(RenderLock&&) {
-  renderer.clearScreen();
+void BookStatsActionsActivity::activateIndex(const int index) {
+  if (index < 0 || index >= ACTION_COUNT) return;
+  app.clearTapFlash();  // every row opens a sub-screen
+  nav.selected = index;
+  if (index == ACTION_ADJUST_READING_TIME) {
+    openAdjustment();
+  } else if (index == ACTION_MODIFY_START_DATE) {
+    openStartDateSelection();
+  } else {
+    confirmResetBookStats();
+  }
+}
 
+void BookStatsActionsActivity::drawChrome() {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  const int listHeight = std::min(contentHeight, metrics.listWithSubtitleRowHeight * ACTION_COUNT);
-  const std::string subtitle =
-      renderer.truncatedText(UI_10_FONT_ID, bookTitle.c_str(), pageWidth - metrics.contentSidePadding * 2);
-
+  const std::string subtitle = renderer.truncatedText(UI_10_FONT_ID, bookTitle.c_str(),
+                                                      renderer.getScreenWidth() - metrics.contentSidePadding * 2);
   HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_BOOK_STATS_ACTIONS), subtitle.c_str());
+}
 
-  GUI.drawList(
-      renderer, Rect{0, contentTop, pageWidth, listHeight}, ACTION_COUNT, selectedIndex,
-      [](const int index) {
-        if (index == ACTION_ADJUST_READING_TIME) return std::string(tr(STR_ADJUST_READING_TIME));
-        if (index == ACTION_MODIFY_START_DATE) return std::string(tr(STR_MODIFY_START_DATE));
-        return std::string(tr(STR_RESET_THIS_BOOK_STATS));
-      });
+void BookStatsActionsActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+
+  fui::ListProps props;
+  props.items = rowItems;
+  props.count = static_cast<uint16_t>(ACTION_COUNT);
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
+  props.labelText = screen.theme().smallText;
+  props.labelText.maxLines = 2;
+  syncListViewport(screen, props);
+  const int16_t rowHeight = props.rowHeight > 0 ? props.rowHeight : screen.theme().rowHeight;
+  const int16_t rowGap = props.rowGap >= 0 ? props.rowGap : screen.theme().listRowGap;
+  const int16_t listHeight = static_cast<int16_t>(rowHeight * ACTION_COUNT + rowGap * (ACTION_COUNT - 1));
+  screen.list(props, listHeight);
 
   if (startDateApplyFailed) {
-    const int hintTop = contentTop + listHeight + metrics.verticalSpacing;
-    const int hintWidth = pageWidth - metrics.contentSidePadding * 2;
-    const std::string hint = renderer.truncatedText(UI_10_FONT_ID, tr(STR_CHOOSE_EARLIER_START_DATE), hintWidth);
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, hintTop, hint.c_str());
+    screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+    const int16_t sidePadding = static_cast<int16_t>(metrics.contentSidePadding);
+    screen.insetContent(fui::Insets{0, sidePadding, 0, sidePadding});
+    fui::TextStyle hint = screen.theme().smallText;
+    hint.maxLines = 3;
+    const fui::Size size =
+        fui::measureWrappedText(screen.target(), tr(STR_CHOOSE_EARLIER_START_DATE), hint, screen.body().width);
+    screen.target().text(screen.takeTop(size.height), tr(STR_CHOOSE_EARLIER_START_DATE), hint);
   }
-
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
 }

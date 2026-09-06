@@ -3,8 +3,8 @@
 #include <functional>
 #include <string>
 
-#include "../Activity.h"
 #include "MappedInputManager.h"
+#include "activities/Activity.h"
 
 class BmpViewerActivity final : public Activity {
  public:
@@ -18,6 +18,8 @@ class BmpViewerActivity final : public Activity {
  private:
   void loadSiblingImages();
   void doSetSleepCover();
+  bool canSetSleepCover() const;
+  bool renderPng();
 
   std::string filePath;
   std::vector<std::string> siblingImages;

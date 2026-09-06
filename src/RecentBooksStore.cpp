@@ -170,7 +170,8 @@ bool RecentBooksStore::updateBookPath(const std::string& oldKey, const std::stri
   }
 
   const std::string resolvedBookId =
-      !bookId.empty() ? bookId : (!normalizedNewPath.empty() ? BookIdentity::resolveStableBookId(normalizedNewPath) : "");
+      !bookId.empty() ? bookId
+                      : (!normalizedNewPath.empty() ? BookIdentity::resolveStableBookId(normalizedNewPath) : "");
   const int existingIndex = findBookIndex(oldKey, resolvedBookId);
   if (existingIndex < 0) {
     return false;
@@ -192,6 +193,22 @@ bool RecentBooksStore::updateBookPath(const std::string& oldKey, const std::stri
   }
   saveToFile();
   return true;
+}
+
+void RecentBooksStore::updatePath(const std::string& oldPath, const std::string& newPath,
+                                  const std::string& oldCachePath, const std::string& newCachePath) {
+  const int existingIndex = findBookIndex(oldPath, "");
+  if (existingIndex < 0) {
+    return;
+  }
+
+  std::string coverBmpPath;
+  const RecentBook& existing = recentBooks[existingIndex];
+  if (!oldCachePath.empty() && !existing.coverBmpPath.empty() && existing.coverBmpPath.rfind(oldCachePath, 0) == 0) {
+    coverBmpPath = newCachePath + existing.coverBmpPath.substr(oldCachePath.size());
+  }
+  // updateBookPath keeps the existing title/author/cover when the overrides are empty and persists.
+  updateBookPath(oldPath, newPath, "", "", coverBmpPath, existing.bookId);
 }
 
 bool RecentBooksStore::removeBook(const std::string& key) {
@@ -281,7 +298,7 @@ bool RecentBooksStore::loadFromFile() {
 }
 
 bool RecentBooksStore::loadFromBinaryFile() {
-  FsFile inputFile;
+  HalFile inputFile;
   if (!Storage.openFileForRead("RBS", RECENT_BOOKS_FILE_BIN, inputFile)) {
     return false;
   }

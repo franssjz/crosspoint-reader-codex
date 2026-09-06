@@ -43,10 +43,8 @@ enum class AxisLabelAlign { Left, Center, Right };
 
 constexpr size_t PROFILE_SECTION_COUNT = 4;
 constexpr std::array<int, PROFILE_SECTION_COUNT> AXIS_LABEL_WIDTHS = {112, 144, 126, 126};
-constexpr std::array<AxisLabelAlign, PROFILE_SECTION_COUNT> AXIS_LABEL_ALIGNS = {AxisLabelAlign::Center,
-                                                                                  AxisLabelAlign::Center,
-                                                                                  AxisLabelAlign::Left,
-                                                                                  AxisLabelAlign::Right};
+constexpr std::array<AxisLabelAlign, PROFILE_SECTION_COUNT> AXIS_LABEL_ALIGNS = {
+    AxisLabelAlign::Center, AxisLabelAlign::Center, AxisLabelAlign::Left, AxisLabelAlign::Right};
 
 using AxisSummary = ReadingProfileAxisSummary;
 
@@ -71,7 +69,9 @@ int roundedPercent(const uint64_t value, const uint64_t total) {
 
 int clampPercent(const int value) { return std::clamp(value, 0, 100); }
 
-std::string formatFraction(const int value, const int total) { return std::to_string(value) + "/" + std::to_string(total); }
+std::string formatFraction(const int value, const int total) {
+  return std::to_string(value) + "/" + std::to_string(total);
+}
 
 std::string formatPercentLabel(const int value) { return std::to_string(clampPercent(value)) + "%"; }
 
@@ -124,7 +124,8 @@ bool intersectsVertical(const int top, const int height, const int viewportTop, 
   return bottom > viewportTop && top < viewportBottom;
 }
 
-void fillPolygonDither(GfxRenderer& renderer, const int* xPoints, const int* yPoints, const int numPoints, const Color color) {
+void fillPolygonDither(GfxRenderer& renderer, const int* xPoints, const int* yPoints, const int numPoints,
+                       const Color color) {
   if (numPoints < 3) {
     return;
   }
@@ -180,9 +181,9 @@ void drawCompactMetricCard(GfxRenderer& renderer, const Rect& rect, const std::s
   renderer.fillRectDither(rect.x, rect.y, rect.width, rect.height, Color::LightGray);
   renderer.drawRect(rect.x, rect.y, rect.width, rect.height);
 
-  const int valueFontId =
-      renderer.getTextWidth(UI_12_FONT_ID, value.c_str(), EpdFontFamily::BOLD) <= rect.width - 20 ? UI_12_FONT_ID
-                                                                                                    : UI_10_FONT_ID;
+  const int valueFontId = renderer.getTextWidth(UI_12_FONT_ID, value.c_str(), EpdFontFamily::BOLD) <= rect.width - 20
+                              ? UI_12_FONT_ID
+                              : UI_10_FONT_ID;
   renderer.drawText(valueFontId, rect.x + 10, rect.y + 10, value.c_str(), true, EpdFontFamily::BOLD);
 
   int labelY = rect.y + 10 + renderer.getLineHeight(valueFontId) + 6;
@@ -274,18 +275,19 @@ std::array<ProfileSection, 4> getProfileSections(const ReadingProfileSummary& su
 
 int getContentBottom(const GfxRenderer& renderer, const int contentTop, const ReadingProfileSummary& summary,
                      const std::array<std::vector<std::string>, 4>& sectionDescriptionLines) {
-  int sectionTop = contentTop + RADAR_TOP_GAP + RADAR_SECTION_HEIGHT + SCORE_TOP_GAP + SCORE_CARD_HEIGHT + SECTION_ROW_GAP;
+  int sectionTop =
+      contentTop + RADAR_TOP_GAP + RADAR_SECTION_HEIGHT + SCORE_TOP_GAP + SCORE_CARD_HEIGHT + SECTION_ROW_GAP;
   const auto sections = getProfileSections(summary);
   for (size_t index = 0; index < sections.size(); ++index) {
     const auto& section = sections[index];
     const auto& descriptionLines = sectionDescriptionLines[index];
     const int cardHeight = getSectionCardHeight(*section.summary);
-    sectionTop += SECTION_TITLE_HEIGHT + SECTION_DESCRIPTION_TOP_GAP +
-                  static_cast<int>(descriptionLines.size()) * renderer.getLineHeight(UI_10_FONT_ID) +
-                  SECTION_DESCRIPTION_BOTTOM_GAP + cardHeight +
-                  (section.summary->tertiaryLabelId != StrId::STR_NONE_OPT ? SECTION_EXTRA_CARD_ROW_GAP + cardHeight
-                                                                          : 0) +
-                  SECTION_ROW_GAP;
+    sectionTop +=
+        SECTION_TITLE_HEIGHT + SECTION_DESCRIPTION_TOP_GAP +
+        static_cast<int>(descriptionLines.size()) * renderer.getLineHeight(UI_10_FONT_ID) +
+        SECTION_DESCRIPTION_BOTTOM_GAP + cardHeight +
+        (section.summary->tertiaryLabelId != StrId::STR_NONE_OPT ? SECTION_EXTRA_CARD_ROW_GAP + cardHeight : 0) +
+        SECTION_ROW_GAP;
   }
   return sectionTop;
 }
@@ -320,7 +322,8 @@ ReadingProfileSummary buildReadingProfileSummary() {
     return summary;
   }
 
-  const uint32_t startDayOrdinal = referenceDayOrdinal >= (LAST_7_DAYS - 1) ? referenceDayOrdinal - (LAST_7_DAYS - 1) : 0;
+  const uint32_t startDayOrdinal =
+      referenceDayOrdinal >= (LAST_7_DAYS - 1) ? referenceDayOrdinal - (LAST_7_DAYS - 1) : 0;
   const uint64_t dailyGoalMs = getDailyReadingGoalMs();
   std::array<uint64_t, LAST_7_DAYS> readingMsByDay = {};
   const auto& readingDays = READING_STATS.getReadingDays();
@@ -378,8 +381,8 @@ ReadingProfileSummary buildReadingProfileSummary() {
       if (readingMs == 0) {
         continue;
       }
-      recentSessions.push_back(
-          ReadingSessionLogEntry{0, static_cast<uint32_t>(std::min<uint64_t>(readingMs, static_cast<uint64_t>(UINT32_MAX)))});
+      recentSessions.push_back(ReadingSessionLogEntry{
+          0, static_cast<uint32_t>(std::min<uint64_t>(readingMs, static_cast<uint64_t>(UINT32_MAX)))});
     }
   }
 
@@ -414,7 +417,8 @@ ReadingProfileSummary buildReadingProfileSummary() {
         clampPercent(100 - summary.sessionsUnder10mPercent - summary.sessions10to29mPercent);
   }
 
-  const int habitScore = clampPercent(roundDiv(summary.daysRead * 65 + summary.goalDays * 35, static_cast<int>(LAST_7_DAYS)));
+  const int habitScore =
+      clampPercent(roundDiv(summary.daysRead * 65 + summary.goalDays * 35, static_cast<int>(LAST_7_DAYS)));
   const int streakScore = summary.goalDays > 0 ? roundDiv(summary.longestReadStreak * 100, summary.goalDays) : 0;
   int balanceScore = 0;
   if (summary.daysRead > 1 && weeklyTotalReadingMs > 0) {
@@ -428,8 +432,8 @@ ReadingProfileSummary buildReadingProfileSummary() {
   const int sessionsPerReadDayScore =
       summary.daysRead > 0 ? std::min(100, roundDiv(summary.sessions * 100, summary.daysRead * 3)) : 0;
   const int engagementScore = clampPercent((sessionsScore * 60 + sessionsPerReadDayScore * 40 + 50) / 100);
-  const int depthScore = clampPercent(
-      roundDiv(summary.sessions10to29mPercent * 50 + summary.sessions30mPlusPercent * 100, 100));
+  const int depthScore =
+      clampPercent(roundDiv(summary.sessions10to29mPercent * 50 + summary.sessions30mPlusPercent * 100, 100));
 
   summary.totalScore = clampPercent((habitScore + stabilityScore + engagementScore + depthScore + 2) / 4);
 
@@ -490,14 +494,16 @@ void ReadingProfileActivity::rebuildProfileCache() {
         getMetricCardLabelLines(renderer, pageWidth - sidePadding * 2 - 20, section.summary->tertiaryLabelId);
 
     const int cardHeight = getSectionCardHeight(*section.summary);
-    const int cardsTop = sectionTop + SECTION_TITLE_HEIGHT + SECTION_DESCRIPTION_TOP_GAP +
-                         static_cast<int>(cachedSectionDescriptionLines[index].size()) * renderer.getLineHeight(UI_10_FONT_ID) +
-                         SECTION_DESCRIPTION_BOTTOM_GAP;
+    const int cardsTop =
+        sectionTop + SECTION_TITLE_HEIGHT + SECTION_DESCRIPTION_TOP_GAP +
+        static_cast<int>(cachedSectionDescriptionLines[index].size()) * renderer.getLineHeight(UI_10_FONT_ID) +
+        SECTION_DESCRIPTION_BOTTOM_GAP;
 
     cachedSectionTops[index] = sectionTop;
     cachedSectionCardsTops[index] = cardsTop;
     cachedSectionBottoms[index] =
-        cardsTop + cardHeight + (section.summary->tertiaryLabelId != StrId::STR_NONE_OPT ? SECTION_EXTRA_CARD_ROW_GAP + cardHeight : 0);
+        cardsTop + cardHeight +
+        (section.summary->tertiaryLabelId != StrId::STR_NONE_OPT ? SECTION_EXTRA_CARD_ROW_GAP + cardHeight : 0);
 
     sectionTop = cachedSectionBottoms[index] + SECTION_ROW_GAP;
   }
@@ -537,8 +543,17 @@ void ReadingProfileActivity::loop() {
     }
   };
 
+  // Touch: swipe up scrolls the page up (content follows the finger), swipe
+  // down scrolls back. Back is the left-edge swipe (Button::Back above).
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
+    scrollBy(swipe == MappedInputManager::SwipeDir::Up ? CONTENT_SCROLL_STEP * 2 : -CONTENT_SCROLL_STEP * 2);
+    return;
+  }
+
   int requestedDirection = 0;
-  if (mappedInput.isPressed(MappedInputManager::Button::Up) || mappedInput.isPressed(MappedInputManager::Button::Left)) {
+  if (mappedInput.isPressed(MappedInputManager::Button::Up) ||
+      mappedInput.isPressed(MappedInputManager::Button::Left)) {
     requestedDirection = -1;
   } else if (mappedInput.isPressed(MappedInputManager::Button::Down) ||
              mappedInput.isPressed(MappedInputManager::Button::Right)) {
@@ -552,11 +567,10 @@ void ReadingProfileActivity::loop() {
   }
 
   const bool directionChanged = requestedDirection != scrollDirection;
-  const bool wasPressedNow =
-      (requestedDirection < 0 &&
-       (mappedInput.wasPressed(MappedInputManager::Button::Up) || mappedInput.wasPressed(MappedInputManager::Button::Left))) ||
-      (requestedDirection > 0 &&
-       (mappedInput.wasPressed(MappedInputManager::Button::Down) || mappedInput.wasPressed(MappedInputManager::Button::Right)));
+  const bool wasPressedNow = (requestedDirection < 0 && (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
+                                                         mappedInput.wasPressed(MappedInputManager::Button::Left))) ||
+                             (requestedDirection > 0 && (mappedInput.wasPressed(MappedInputManager::Button::Down) ||
+                                                         mappedInput.wasPressed(MappedInputManager::Button::Right)));
   const bool canRepeat = mappedInput.getHeldTime() >= SCROLL_REPEAT_START_MS &&
                          (lastScrollActionMs == 0 || millis() - lastScrollActionMs >= SCROLL_REPEAT_INTERVAL_MS);
 
@@ -602,14 +616,10 @@ void ReadingProfileActivity::render(RenderLock&&) {
     renderer.drawLine(radarCenterX, radarCenterY - RADAR_RADIUS, radarCenterX, radarCenterY + RADAR_RADIUS);
     renderer.drawLine(radarCenterX - RADAR_RADIUS, radarCenterY, radarCenterX + RADAR_RADIUS, radarCenterY);
 
-    const int scoreXs[4] = {radarCenterX,
-                            radarCenterX + RADAR_RADIUS * profileSummary.engagement.score / 100,
-                            radarCenterX,
-                            radarCenterX - RADAR_RADIUS * profileSummary.depth.score / 100};
-    const int scoreYs[4] = {radarCenterY - RADAR_RADIUS * profileSummary.habit.score / 100,
-                            radarCenterY,
-                            radarCenterY + RADAR_RADIUS * profileSummary.stability.score / 100,
-                            radarCenterY};
+    const int scoreXs[4] = {radarCenterX, radarCenterX + RADAR_RADIUS * profileSummary.engagement.score / 100,
+                            radarCenterX, radarCenterX - RADAR_RADIUS * profileSummary.depth.score / 100};
+    const int scoreYs[4] = {radarCenterY - RADAR_RADIUS * profileSummary.habit.score / 100, radarCenterY,
+                            radarCenterY + RADAR_RADIUS * profileSummary.stability.score / 100, radarCenterY};
     fillPolygonDither(renderer, scoreXs, scoreYs, 4, Color::DarkGray);
     drawDiamond(renderer, radarCenterX, radarCenterY, RADAR_RADIUS, true);
     for (int index = 0; index < 4; ++index) {
@@ -676,8 +686,7 @@ void ReadingProfileActivity::render(RenderLock&&) {
       }
       const int tertiaryTop = cardsTop + cardHeight + SECTION_EXTRA_CARD_ROW_GAP;
       if (intersectsVertical(tertiaryTop, cardHeight, viewportTop, viewportBottom)) {
-        drawCompactMetricCard(renderer,
-                              Rect{sidePadding, tertiaryTop, pageWidth - sidePadding * 2, cardHeight},
+        drawCompactMetricCard(renderer, Rect{sidePadding, tertiaryTop, pageWidth - sidePadding * 2, cardHeight},
                               axis.tertiaryValue, cachedMetricCardLines[sectionIndex].tertiaryLabelLines);
       }
     } else {

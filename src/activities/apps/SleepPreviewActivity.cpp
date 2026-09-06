@@ -15,8 +15,8 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/HeaderDateUtils.h"
-#include "util/SleepImageUtils.h"
 #include "util/PngSleepRenderer.h"
+#include "util/SleepImageUtils.h"
 
 namespace {
 void drawPreviewBitmap(GfxRenderer& renderer, const Rect& contentRect, Bitmap& bitmap) {
@@ -86,13 +86,30 @@ void SleepPreviewActivity::loop() {
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  // Touch: a tap anywhere is the Confirm action (use this directory); the
+  // Back gesture arrives as Button::Back above.
+  int tapX = 0;
+  int tapY = 0;
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || mappedInput.wasScreenTapped(tapX, tapY)) {
     selectDirectory();
     return;
   }
 
   const int itemCount = static_cast<int>(imagePaths.size());
   if (itemCount == 0) {
+    return;
+  }
+
+  // Swipe up/down pages through the images like the Up/Down buttons.
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Up) {
+    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, itemCount);
+    renderPreview(true);
+    return;
+  }
+  if (swipe == MappedInputManager::SwipeDir::Down) {
+    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, itemCount);
+    renderPreview(true);
     return;
   }
 
@@ -131,19 +148,20 @@ void SleepPreviewActivity::renderPreview(bool showLoadingPopup) {
   const int pageHeight = renderer.getScreenHeight();
   const bool isSelectedDirectory = directoryPath == std::string(SETTINGS.sleepDirectory);
   const std::string directoryLabel = SleepImageUtils::getDirectoryLabel(directoryPath);
-  const std::string subtitle =
-      imagePaths.empty() ? (isSelectedDirectory ? std::string(tr(STR_SELECTED)) : std::string())
-                         : (std::to_string(selectedIndex + 1) + "/" + std::to_string(imagePaths.size()));
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_USE_DIRECTORY),
-                                            imagePaths.empty() ? "" : tr(STR_DIR_UP),
-                                            imagePaths.empty() ? "" : tr(STR_DIR_DOWN));
+  const std::string subtitle = imagePaths.empty()
+                                   ? (isSelectedDirectory ? std::string(tr(STR_SELECTED)) : std::string())
+                                   : (std::to_string(selectedIndex + 1) + "/" + std::to_string(imagePaths.size()));
+  const auto labels =
+      mappedInput.mapLabels(tr(STR_BACK), tr(STR_USE_DIRECTORY), imagePaths.empty() ? "" : tr(STR_DIR_UP),
+                            imagePaths.empty() ? "" : tr(STR_DIR_DOWN));
 
   drawPreviewFrame(renderer, directoryLabel, subtitle, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  const Rect contentRect{metrics.contentSidePadding, metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing,
-                         pageWidth - metrics.contentSidePadding * 2,
-                         pageHeight - (metrics.topPadding + metrics.headerHeight + metrics.buttonHintsHeight +
-                                       metrics.verticalSpacing * 3)};
+  const Rect contentRect{
+      metrics.contentSidePadding, metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing,
+      pageWidth - metrics.contentSidePadding * 2,
+      pageHeight -
+          (metrics.topPadding + metrics.headerHeight + metrics.buttonHintsHeight + metrics.verticalSpacing * 3)};
 
   if (imagePaths.empty()) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10, tr(STR_NO_FILES_FOUND));
@@ -165,7 +183,7 @@ void SleepPreviewActivity::renderPreview(bool showLoadingPopup) {
       drawPreviewFrame(renderer, directoryLabel, subtitle, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
       rendered = drawPreviewPng(renderer, contentRect, imagePath);
     } else {
-      FsFile file;
+      HalFile file;
       if (Storage.openFileForRead("SLP", imagePath, file)) {
         Bitmap bitmap(file, true);
         if (bitmap.parseHeaders() == BmpReaderError::Ok) {

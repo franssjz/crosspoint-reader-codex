@@ -47,6 +47,16 @@ class RecentBooksStore {
 
   bool removeBook(const std::string& key);
 
+  // Upstream API: remove the entry whose path matches (used when a book is removed from recents or
+  // finished/read). Returns true if an entry was found and removed. Persistence is best-effort.
+  bool removeByPath(const std::string& path) { return removeBook(path); }
+
+  // Upstream API: repoint an entry's path (and coverBmpPath, if it lived under the old cache dir)
+  // after the backing file and cache dir were moved on disk. No-op if no entry matches oldPath.
+  // Persists on success. Keeps the entry's list position (does not reorder).
+  void updatePath(const std::string& oldPath, const std::string& newPath, const std::string& oldCachePath,
+                  const std::string& newCachePath);
+
   // True if the book's backing file is no longer present on the SD card.
   static bool isMissing(const RecentBook& book);
 

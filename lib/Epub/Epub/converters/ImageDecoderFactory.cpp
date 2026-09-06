@@ -36,7 +36,7 @@ ImageFileFormat formatFromExtension(const std::string& imagePath) {
 ImageFileFormat formatFromStoredSignature(const std::string& imagePath) {
   if (!Storage.exists(imagePath.c_str())) return ImageFileFormat::Unknown;
 
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("DEC", imagePath, file)) return ImageFileFormat::Unknown;
   uint8_t signature[8] = {};
   const int bytesRead = file.read(signature, sizeof(signature));

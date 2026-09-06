@@ -104,6 +104,12 @@ class ChapterHtmlSlimParser {
     bool hasItalic = false, italic = false;
     bool hasUnderline = false, underline = false;
     bool hasStrikeThrough = false, strikeThrough = false;
+    // Upstream RTL support: CSS `direction` / HTML dir inherited through the stack.
+    // setsParagraphDirection marks <html>/<body> entries whose direction defines
+    // the paragraph base direction (inline dir changes do not).
+    bool hasDirection = false;
+    CssTextDirection direction = CssTextDirection::Ltr;
+    bool setsParagraphDirection = false;
     bool hasSup = false, sup = false;
     bool hasSub = false, sub = false;
   };
@@ -114,6 +120,8 @@ class ChapterHtmlSlimParser {
   bool effectiveItalic = false;
   bool effectiveUnderline = false;
   bool effectiveStrikeThrough = false;
+  bool effectiveDirectionDefined = false;
+  CssTextDirection effectiveDirection = CssTextDirection::Ltr;
   bool effectiveSup = false;
   bool effectiveSub = false;
 
@@ -164,18 +172,22 @@ class ChapterHtmlSlimParser {
   uint32_t currentPageVisibleOffset = 0;
   bool currentPageVisibleOffsetSet = false;
   bool insideBody = false;
+  bool htmlEnded_ = false;  // </html> seen: trailing junk after it is not a parse error
   bool syntheticCharacterData = false;
   uint16_t nonVisibleTextDepth = 0;
 
   // Footnote link tracking
   bool insideFootnoteLink = false;
   int footnoteLinkDepth = -1;
+  uint8_t currentFootnoteLinkId = 0;  // ParsedText link target id for the open internal link
   FootnoteEntry currentFootnote = {};
   int currentFootnoteLinkTextLen = 0;
   std::vector<std::pair<int, FootnoteEntry>> pendingFootnotes;  // <wordIndex, entry>
   int wordsExtractedInBlock = 0;
 
   void updateEffectiveInlineStyle();
+  static void applyDirectionToEntry(StyleStackEntry& entry, const CssStyle& css);
+  static void applyVerticalAlignToEntry(StyleStackEntry& entry, const CssStyle& css);
   bool shouldAbortForLowMemory(const char* stage);
   bool startNewPage(const char* reason);
   void collectReferencedAnchors();

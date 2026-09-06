@@ -5,17 +5,21 @@
 
 #include <algorithm>
 
+#include "AppMetricCard.h"
 #include "FlashcardReviewActivity.h"
 #include "FlashcardSessionSummaryActivity.h"
-#include "AppMetricCard.h"
 #include "components/UITheme.h"
+#include "components/UiAppHelpers.h"
 #include "fontIds.h"
 #include "util/HeaderDateUtils.h"
 #include "util/TimeUtils.h"
 
+namespace fui = freeink::ui;
+
 namespace {
 constexpr int METRIC_CARD_HEIGHT = 74;
 constexpr int METRIC_CARD_GAP = 8;
+constexpr int METRIC_CARD_ROWS = 4;
 
 std::string formatDateOrFallback(const uint32_t timestamp) {
   const std::string date = TimeUtils::formatDate(timestamp);
@@ -50,76 +54,106 @@ void FlashcardDeckStatsActivity::loadDeckData() {
 }
 
 void FlashcardDeckStatsActivity::onEnter() {
-  Activity::onEnter();
+  UiListActivity::onEnter();
   loadDeckData();
-  requestUpdate();
+  openRow = fui::ListItem{};
+  openRow.label = tr(STR_OPEN);
+  openRow.icon = listIconFor(UIIcon::Text);
+  openRow.actionValue = 0;
 }
 
-void FlashcardDeckStatsActivity::loop() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    finish();
-    return;
-  }
-
-  if (loaded && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    startActivityForResult(std::make_unique<FlashcardReviewActivity>(renderer, mappedInput, deckPath),
-                           [this](const ActivityResult& result) {
-                             loadDeckData();
-                             if (const auto* session = std::get_if<FlashcardSessionResult>(&result.data)) {
-                               startActivityForResult(std::make_unique<FlashcardSessionSummaryActivity>(renderer, mappedInput, *session),
-                                                      [this](const ActivityResult&) {
-                                                        loadDeckData();
-                                                        requestUpdate();
-                                                      });
-                               return;
-                             }
-                             requestUpdate();
-                           });
-  }
+// Y where the metric-card grid ends (the list sits below it).
+int FlashcardDeckStatsActivity::cardsBottom() const {
+  const auto& metricsUi = UITheme::getInstance().getMetrics();
+  const int contentTop = metricsUi.topPadding + metricsUi.headerHeight + metricsUi.verticalSpacing;
+  return contentTop + METRIC_CARD_ROWS * METRIC_CARD_HEIGHT + (METRIC_CARD_ROWS - 1) * METRIC_CARD_GAP;
 }
 
-void FlashcardDeckStatsActivity::render(RenderLock&&) {
-  renderer.clearScreen();
+void FlashcardDeckStatsActivity::activateIndex(const int index) {
+  if (!loaded || index != 0) return;
+  app.clearTapFlash();
+  startActivityForResult(
+      std::make_unique<FlashcardReviewActivity>(renderer, mappedInput, deckPath), [this](const ActivityResult& result) {
+        {
+          RenderLock lock(*this);
+          loadDeckData();
+        }
+        if (const auto* session = std::get_if<FlashcardSessionResult>(&result.data)) {
+          startActivityForResult(std::make_unique<FlashcardSessionSummaryActivity>(renderer, mappedInput, *session),
+                                 [this](const ActivityResult&) {
+                                   {
+                                     RenderLock lock(*this);
+                                     loadDeckData();
+                                   }
+                                   requestUpdate();
+                                 });
+          return;
+        }
+        requestUpdate();
+      });
+}
 
+void FlashcardDeckStatsActivity::drawChrome() {
   const auto& metricsUi = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int sidePadding = metricsUi.contentSidePadding;
   const int contentTop = metricsUi.topPadding + metricsUi.headerHeight + metricsUi.verticalSpacing;
 
   HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_FLASHCARDS), loaded ? deck.title.c_str() : tr(STR_STATISTICS));
-
-  if (!loaded) {
-    renderer.drawCenteredText(UI_10_FONT_ID, contentTop + 24,
-                              errorMessage.empty() ? tr(STR_FLASHCARDS_INVALID_DECK) : errorMessage.c_str());
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
-    return;
-  }
+  if (!loaded) return;
 
   const int cardWidth = (pageWidth - sidePadding * 2 - METRIC_CARD_GAP) / 2;
+  const int rightX = sidePadding + cardWidth + METRIC_CARD_GAP;
   int currentY = contentTop;
   drawMetricCard(renderer, Rect{sidePadding, currentY, cardWidth, METRIC_CARD_HEIGHT}, tr(STR_TOTAL_CARDS),
                  std::to_string(metrics.totalCards));
-  drawMetricCard(renderer, Rect{sidePadding + cardWidth + METRIC_CARD_GAP, currentY, cardWidth, METRIC_CARD_HEIGHT},
-                 tr(STR_SEEN), std::to_string(metrics.seenCards));
+  drawMetricCard(renderer, Rect{rightX, currentY, cardWidth, METRIC_CARD_HEIGHT}, tr(STR_SEEN),
+                 std::to_string(metrics.seenCards));
   currentY += METRIC_CARD_HEIGHT + METRIC_CARD_GAP;
   drawMetricCard(renderer, Rect{sidePadding, currentY, cardWidth, METRIC_CARD_HEIGHT}, tr(STR_UNSEEN),
                  std::to_string(metrics.unseenCards));
-  drawMetricCard(renderer, Rect{sidePadding + cardWidth + METRIC_CARD_GAP, currentY, cardWidth, METRIC_CARD_HEIGHT},
-                 tr(STR_DUE), std::to_string(metrics.dueCards));
+  drawMetricCard(renderer, Rect{rightX, currentY, cardWidth, METRIC_CARD_HEIGHT}, tr(STR_DUE),
+                 std::to_string(metrics.dueCards));
   currentY += METRIC_CARD_HEIGHT + METRIC_CARD_GAP;
   drawMetricCard(renderer, Rect{sidePadding, currentY, cardWidth, METRIC_CARD_HEIGHT}, tr(STR_MASTERED),
                  std::to_string(metrics.masteredCards));
-  drawMetricCard(renderer, Rect{sidePadding + cardWidth + METRIC_CARD_GAP, currentY, cardWidth, METRIC_CARD_HEIGHT},
-                 tr(STR_SUCCESS_RATE), std::to_string(metrics.successRatePercent) + "%");
+  drawMetricCard(renderer, Rect{rightX, currentY, cardWidth, METRIC_CARD_HEIGHT}, tr(STR_SUCCESS_RATE),
+                 std::to_string(metrics.successRatePercent) + "%");
   currentY += METRIC_CARD_HEIGHT + METRIC_CARD_GAP;
   drawMetricCard(renderer, Rect{sidePadding, currentY, cardWidth, METRIC_CARD_HEIGHT}, tr(STR_SESSIONS),
                  std::to_string(metrics.sessionCount));
-  drawMetricCard(renderer, Rect{sidePadding + cardWidth + METRIC_CARD_GAP, currentY, cardWidth, METRIC_CARD_HEIGHT},
-                 tr(STR_LAST_REVIEW), formatDateOrFallback(metrics.lastReviewedAt));
+  drawMetricCard(renderer, Rect{rightX, currentY, cardWidth, METRIC_CARD_HEIGHT}, tr(STR_LAST_REVIEW),
+                 formatDateOrFallback(metrics.lastReviewedAt));
+}
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OPEN), "", "");
+void FlashcardDeckStatsActivity::drawFooter() {
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), loaded ? tr(STR_OPEN) : "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+}
+
+void FlashcardDeckStatsActivity::buildScreen(UiScreen& screen) {
+  const auto& metricsUi = UITheme::getInstance().getMetrics();
+  if (!loaded) {
+    screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metricsUi.topPadding + metricsUi.headerHeight),
+                                                  0, static_cast<int16_t>(metricsUi.buttonHintsHeight), 0});
+    fui::TextStyle message = screen.theme().bodyText;
+    message.maxLines = 3;
+    screen.centeredText(errorMessage.empty() ? tr(STR_FLASHCARDS_INVALID_DECK) : errorMessage.c_str(), message);
+    return;
+  }
+
+  // The list occupies the band below the metric cards (drawn as chrome).
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(cardsBottom()), 0, static_cast<int16_t>(metricsUi.buttonHintsHeight), 0});
+  screen.spacer(static_cast<int16_t>(metricsUi.verticalSpacing));
+
+  fui::ListProps props;
+  props.items = &openRow;
+  props.count = 1;
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;  // Confirm stays in loop()
+  props.labelText = screen.theme().smallText;
+  props.labelText.bold = true;
+  syncListViewport(screen, props);
+  screen.list(props);
 }

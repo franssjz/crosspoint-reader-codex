@@ -9,23 +9,13 @@
 #include "MappedInputManager.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
+
+namespace fui = freeink::ui;
 
 namespace {
 constexpr const char* PAGE_LABEL = "Page ";
 constexpr unsigned long DELETE_BOOKMARK_HOLD_MS = 1000;
-}
-
-int BookmarksActivity::getPageItems() const {
-  constexpr int lineHeight = 30;
-  const int screenHeight = renderer.getScreenHeight();
-  const auto orientation = renderer.getOrientation();
-  const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
-  const int hintGutterHeight = isPortraitInverted ? 50 : 0;
-  const int startY = 60 + hintGutterHeight;
-  const int availableHeight = screenHeight - startY - lineHeight;
-  return std::max(1, availableHeight / lineHeight);
-}
+}  // namespace
 
 std::string BookmarksActivity::getItemLabel(const int index) const {
   const auto& bookmark = bookmarks[index];
@@ -58,20 +48,89 @@ std::string BookmarksActivity::getItemLabel(const int index) const {
   return buffer;
 }
 
-void BookmarksActivity::onEnter() {
-  Activity::onEnter();
-  requestUpdate();
+// Derives rowLabels/rowItems from bookmarks. Called whenever bookmarks
+// changes (enter, deletion) so buildScreen() reuses the cached rows.
+void BookmarksActivity::rebuildRowItems() {
+  rowItems.clear();
+  rowLabels.clear();
+  rowLabels.reserve(bookmarks.size());
+  rowItems.reserve(bookmarks.size());
+  for (size_t i = 0; i < bookmarks.size(); ++i) {
+    rowLabels.push_back(getItemLabel(static_cast<int>(i)));
+    fui::ListItem item;
+    item.label = rowLabels.back().c_str();
+    item.actionValue = static_cast<int16_t>(i);
+    rowItems.push_back(item);
+  }
 }
 
-void BookmarksActivity::onExit() { Activity::onExit(); }
+const char* BookmarksActivity::headerTitle() const {
+  return headerTitleText.empty() ? tr(STR_HIGHLIGHTS) : headerTitleText.c_str();
+}
 
-void BookmarksActivity::confirmDeleteSelectedBookmark() {
-  if (!onDeleteBookmark || selectorIndex < 0 || selectorIndex >= static_cast<int>(bookmarks.size())) {
+void BookmarksActivity::onEnter() {
+  UiListActivity::onEnter();
+  rebuildRowItems();
+}
+
+void BookmarksActivity::onExit() {
+  Activity::onExit();
+  // rowItems' labels alias rowLabels; drop both together.
+  rowItems.clear();
+  rowLabels.clear();
+}
+
+void BookmarksActivity::finishCancelled() {
+  ActivityResult result;
+  result.isCancelled = true;
+  setResult(std::move(result));
+  finish();
+}
+
+void BookmarksActivity::activateIndex(const int index) {
+  if (index < 0 || index >= listCount()) return;
+  // Opening the bookmark leaves this screen; a lingering flash would gray an
+  // unrelated row when the list next appears.
+  app.clearTapFlash();
+  const auto& bookmark = bookmarks[index];
+  setResult(BookmarkResult{static_cast<int>(bookmark.spineIndex), bookmark.pageNumber, bookmark.hasVisibleTextOffset,
+                           bookmark.visibleTextOffset});
+  finish();
+}
+
+void BookmarksActivity::onRowLongPress(const int index) {
+  if (index < 0 || index >= listCount()) return;
+  app.clearTapFlash();
+  confirmDeleteBookmark(index);
+}
+
+bool BookmarksActivity::handleButtons() {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    if (!bookmarks.empty() && nav.selected >= 0 && nav.selected < listCount()) {
+      if (mappedInput.getHeldTime() >= DELETE_BOOKMARK_HOLD_MS) {
+        confirmDeleteBookmark(nav.selected);
+      } else {
+        activateIndex(nav.selected);
+      }
+    }
+    return true;
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    finishCancelled();
+    return true;
+  }
+
+  return false;
+}
+
+void BookmarksActivity::confirmDeleteBookmark(const int index) {
+  if (!onDeleteBookmark || index < 0 || index >= listCount()) {
     return;
   }
 
-  const auto bookmark = bookmarks[selectorIndex];
-  const std::string body = getItemLabel(selectorIndex);
+  const auto bookmark = bookmarks[index];
+  const std::string body = getItemLabel(index);
   startActivityForResult(
       std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_HIGHLIGHT), body),
       [this, bookmark](const ActivityResult& result) {
@@ -81,6 +140,9 @@ void BookmarksActivity::confirmDeleteSelectedBookmark() {
         }
 
         if (onDeleteBookmark(bookmark)) {
+          // The interaction table still indexes the pre-removal rows; stop
+          // routing touches against it until the next render republishes.
+          closeRouting();
           bookmarks.erase(std::remove_if(bookmarks.begin(), bookmarks.end(),
                                          [&](const BookmarkStore::Bookmark& current) {
                                            return current.isTextHighlight == bookmark.isTextHighlight &&
@@ -97,115 +159,47 @@ void BookmarksActivity::confirmDeleteSelectedBookmark() {
                           bookmarks.end());
 
           if (bookmarks.empty()) {
-            ActivityResult cancelResult;
-            cancelResult.isCancelled = true;
-            setResult(std::move(cancelResult));
-            finish();
+            finishCancelled();
             return;
           }
 
-          if (selectorIndex >= static_cast<int>(bookmarks.size())) {
-            selectorIndex = static_cast<int>(bookmarks.size()) - 1;
+          rebuildRowItems();
+          if (nav.selected >= listCount()) {
+            nav.selected = listCount() - 1;
           }
+          nav.follow(listCount());
         }
 
-        requestUpdate();
+        requestUpdate(true);
       });
 }
 
-void BookmarksActivity::loop() {
-  const int totalItems = static_cast<int>(bookmarks.size());
-  const int pageItems = getPageItems();
+void BookmarksActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  // Content: the safe area minus the header band GUI.drawHeader paints.
+  screen.setContentMarginFromScreen(fui::Insets{
+      static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight),
+      static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width)),
+      static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height)), static_cast<int16_t>(safe.x)});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (mappedInput.getHeldTime() >= DELETE_BOOKMARK_HOLD_MS) {
-      confirmDeleteSelectedBookmark();
-      return;
-    }
-
-    if (!bookmarks.empty()) {
-      const auto& bookmark = bookmarks[selectorIndex];
-      setResult(BookmarkResult{static_cast<int>(bookmark.spineIndex), bookmark.pageNumber,
-                               bookmark.hasVisibleTextOffset, bookmark.visibleTextOffset});
-      finish();
-    }
+  if (bookmarks.empty()) {
+    screen.centeredText(tr(STR_NO_HIGHLIGHTS), screen.theme().bodyText);
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    ActivityResult result;
-    result.isCancelled = true;
-    setResult(std::move(result));
-    finish();
-    return;
-  }
-
-  buttonNavigator.onNextRelease([this, totalItems] {
-    selectorIndex = ButtonNavigator::nextIndex(selectorIndex, totalItems);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousRelease([this, totalItems] {
-    selectorIndex = ButtonNavigator::previousIndex(selectorIndex, totalItems);
-    requestUpdate();
-  });
-
-  buttonNavigator.onNextContinuous([this, totalItems, pageItems] {
-    selectorIndex = ButtonNavigator::nextPageIndex(selectorIndex, totalItems, pageItems);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousContinuous([this, totalItems, pageItems] {
-    selectorIndex = ButtonNavigator::previousPageIndex(selectorIndex, totalItems, pageItems);
-    requestUpdate();
-  });
-}
-
-void BookmarksActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-
-  const int totalItems = static_cast<int>(bookmarks.size());
-  if (totalItems == 0) {
-    renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_NO_HIGHLIGHTS), true, EpdFontFamily::BOLD);
-    renderer.displayBuffer();
-    return;
-  }
-
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto orientation = renderer.getOrientation();
-  const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
-  const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
-  const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
-  const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? 30 : 0;
-  const int contentX = isLandscapeCw ? hintGutterWidth : 0;
-  const int contentWidth = pageWidth - hintGutterWidth;
-  const int hintGutterHeight = isPortraitInverted ? 50 : 0;
-  const int contentY = hintGutterHeight;
-  const int pageItems = getPageItems();
-
-  const char* rawTitle = headerTitle.empty() ? tr(STR_HIGHLIGHTS) : headerTitle.c_str();
-  const std::string title = renderer.truncatedText(UI_12_FONT_ID, rawTitle, contentWidth - 20);
-  const int titleX =
-      contentX + (contentWidth - renderer.getTextWidth(UI_12_FONT_ID, title.c_str(), EpdFontFamily::BOLD)) / 2;
-  renderer.drawText(UI_12_FONT_ID, titleX, 15 + contentY, title.c_str(), true, EpdFontFamily::BOLD);
-
-  const auto pageStartIndex = selectorIndex / pageItems * pageItems;
-  renderer.fillRect(contentX, 60 + contentY + (selectorIndex % pageItems) * 30 - 2, contentWidth - 1, 30);
-
-  for (int i = 0; i < pageItems; ++i) {
-    const int itemIndex = pageStartIndex + i;
-    if (itemIndex >= totalItems) {
-      break;
-    }
-
-    const int displayY = 60 + contentY + i * 30;
-    const bool isSelected = itemIndex == selectorIndex;
-    const std::string label =
-        renderer.truncatedText(UI_10_FONT_ID, getItemLabel(itemIndex).c_str(), contentWidth - 40);
-    renderer.drawText(UI_10_FONT_ID, contentX + 20, displayY, label.c_str(), !isSelected);
-  }
-
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+  // rowItems is built in rebuildRowItems() and reused here on every repaint.
+  fui::ListProps props;
+  props.items = rowItems.data();
+  props.count = static_cast<uint16_t>(rowItems.size());
+  props.action = ACTION_ROW;
+  // Tap opens; long-press prompts deletion (physical buttons stay in loop()).
+  props.inputMask = fui::InputTouch | fui::InputLongPress;
+  // Small font so more of a snippet fits; maxLines=2 wraps long highlights and
+  // marks the style caller-owned (see textStyleUnset).
+  props.labelText = screen.theme().smallText;
+  props.labelText.maxLines = 2;
+  syncListViewport(screen, props);
+  screen.list(props);
 }

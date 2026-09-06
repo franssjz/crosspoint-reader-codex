@@ -4475,7 +4475,14 @@ static const EpdFontData bookerly_12_bolditalic = {
     nullptr,
     bookerly_12_bolditalicKernLeftClasses,
     bookerly_12_bolditalicKernRightClasses,
+    nullptr,  // kernLeftCodepoints: this font keeps the packed class maps above
+    nullptr,  // kernLeftClassIds
+    nullptr,  // kernRightCodepoints
+    nullptr,  // kernRightClassIds
     bookerly_12_bolditalicKernMatrix,
+    nullptr,  // kernRowOffsets: this font keeps the dense matrix above
+    nullptr,  // kernSparseCols
+    nullptr,  // kernSparseValues
     681,
     698,
     167,

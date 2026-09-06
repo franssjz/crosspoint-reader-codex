@@ -124,7 +124,7 @@ uint32_t utf8NextCodepoint(const unsigned char** string) {
   return cp;
 }
 
-void utf8AppendCodepoint(const uint32_t cp, std::string& out) {
+void utf8AppendCodepoint(uint32_t cp, std::string& out) {
   if (cp < 0x80) {
     out += static_cast<char>(cp);
   } else if (cp < 0x800) {

@@ -13,6 +13,13 @@ uint32_t toLowerLatinImpl(const uint32_t cp) {
     return cp + 0x20;
   }
 
+  // Latin Extended-A (U+0100..U+017E): uppercase letters are paired with
+  // lowercase at cp+1. Two sub-ranges have different alignment:
+  //   U+0100..U+0137: uppercase on EVEN codepoints
+  //   U+0139..U+0148: uppercase on ODD codepoints
+  //   U+014A..U+0177: uppercase on EVEN codepoints
+  //   U+0179..U+017E: uppercase on ODD codepoints
+  // Covers Polish (Ą/ą, Ć/ć, Ę/ę, Ł/ł, Ń/ń, Ś/ś, Ź/ź, Ż/ż), Czech, Hungarian, Turkish, etc.
   if ((cp >= 0x0100 && cp <= 0x0137 && (cp % 2 == 0)) || (cp >= 0x0139 && cp <= 0x0148 && (cp % 2 == 1)) ||
       (cp >= 0x014A && cp <= 0x0177 && (cp % 2 == 0)) || (cp >= 0x0179 && cp <= 0x017E && (cp % 2 == 1))) {
     return cp + 1;
@@ -67,6 +74,7 @@ bool isLatinLetter(const uint32_t cp) {
     return true;
   }
 
+  // Latin Extended-A (U+0100..U+017F): Polish, Czech, Hungarian, Turkish, etc.
   if (cp >= 0x0100 && cp <= 0x017F) {
     return true;
   }
@@ -292,28 +300,28 @@ std::vector<CodepointInfo> collectCodepoints(const std::string& word) {
               break;  // y -> ý
             case 0x0043:
               composed = 0x0106;
-              break;
+              break;  // C -> Ć
             case 0x0063:
               composed = 0x0107;
-              break;
+              break;  // c -> ć
             case 0x004E:
               composed = 0x0143;
-              break;
+              break;  // N -> Ń
             case 0x006E:
               composed = 0x0144;
-              break;
+              break;  // n -> ń
             case 0x0053:
               composed = 0x015A;
-              break;
+              break;  // S -> Ś
             case 0x0073:
               composed = 0x015B;
-              break;
+              break;  // s -> ś
             case 0x005A:
               composed = 0x0179;
-              break;
+              break;  // Z -> Ź
             case 0x007A:
               composed = 0x017A;
-              break;
+              break;  // z -> ź
             default:
               break;
           }

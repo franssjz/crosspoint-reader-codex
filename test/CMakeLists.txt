@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(crosspoint_reader_tests CXX)
+project(crosspoint_reader_tests C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,6 +28,10 @@ add_library(crosspoint_test_common INTERFACE)
 target_include_directories(crosspoint_test_common INTERFACE
   ${REPO_ROOT}
   ${REPO_ROOT}/lib
+  ${REPO_ROOT}/lib/MiniBidi
+  ${REPO_ROOT}/lib/MemoryBudget
+  ${REPO_ROOT}/lib/Memory
+  ${REPO_ROOT}/lib/Serialization
 )
 if(MSVC)
   target_compile_options(crosspoint_test_common INTERFACE /W4)
@@ -42,9 +46,27 @@ endif()
 enable_testing()
 include(GoogleTest)
 
+# Upstream suites
+add_subdirectory(streaming_json_parser)
+add_subdirectory(release_json_parser)
+add_subdirectory(differential_rounding)
+add_subdirectory(hyphenation_eval)
 add_subdirectory(utf8_compose)
-add_subdirectory(reader_position)
+add_subdirectory(opds_filename)
+add_subdirectory(html_to_plain_text)
+add_subdirectory(minibidi_arabic)
+add_subdirectory(combining_marks)
 add_subdirectory(credential_integrity)
+add_subdirectory(xml_parser_utils)
+add_subdirectory(token_boundary)
+add_subdirectory(font_cache_manager)
+add_subdirectory(css_parser)
+add_subdirectory(chapter_html_slim_parser)
+add_subdirectory(ligature_guard)
+add_subdirectory(page_link)
+
+# Fork (CPR-vCodex) suites
+add_subdirectory(reader_position)
 add_subdirectory(reader_regressions)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)

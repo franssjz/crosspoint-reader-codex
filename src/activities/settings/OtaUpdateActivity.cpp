@@ -1,10 +1,10 @@
 #include "OtaUpdateActivity.h"
 
-#include <cstdio>
-
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <WiFi.h>
+
+#include <cstdio>
 
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
@@ -57,8 +57,10 @@ void OtaUpdateActivity::checkForUpdateNow() {
   requestUpdateAndWait();
 
   const auto res = updater.checkForUpdate();
+  // NO_UPDATE here means no release carries a firmware asset for this board
+  // (expected until per-board assets are published) — not a failure.
   if (res == OtaUpdater::NO_UPDATE) {
-    LOG_DBG("OTA", "No firmware update available");
+    LOG_DBG("OTA", "No firmware update available for this board");
     {
       RenderLock lock(*this);
       state = NO_UPDATE;
@@ -88,6 +90,17 @@ void OtaUpdateActivity::checkForUpdateNow() {
     RenderLock lock(*this);
     state = WAITING_CONFIRMATION;
   }
+  const char* options[] = {tr(STR_CANCEL), tr(STR_UPDATE)};
+  // Default the selection to Update so the hardware Confirm button installs,
+  // matching the pre-popup layout (Back = cancel, Confirm = update).
+  confirmPopup.show(tr(STR_NEW_UPDATE), options, 2, 1, [this](const int idx) {
+    if (idx == 1) {
+      runUpdateInstall();
+    } else {
+      finish();
+    }
+  });
+  requestUpdate();
 }
 
 void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
@@ -119,7 +132,9 @@ void OtaUpdateActivity::onExit() {
   Activity::onExit();
 
   // Success path reboots via SHUTTING_DOWN, so the new firmware boots
-  // normally. Back-out/failure paths land here with WiFi still active.
+  // normally. Back-out/failure paths land here with WiFi still active;
+  // silent-restart to free the LWIP/TLS fragmentation, same as the other
+  // wifi activities.
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     WiFi.disconnect(false);
     delay(30);
@@ -153,14 +168,15 @@ void OtaUpdateActivity::render(RenderLock&&) {
   if (state == CHECKING_FOR_UPDATE) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_CHECKING_UPDATE));
   } else if (state == WAITING_CONFIRMATION) {
-    renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_NEW_UPDATE), true, EpdFontFamily::BOLD);
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, top + height + metrics.verticalSpacing,
+    // Version info sits in the upper part of the screen so the centered
+    // Cancel/Update popup doesn't cover it (same layout as ConfirmationActivity).
+    const int infoTop = pageHeight / 6;
+    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, infoTop,
                       (std::string(tr(STR_CURRENT_VERSION)) + CROSSPOINT_VERSION).c_str());
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, top + height * 2 + metrics.verticalSpacing * 2,
+    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, infoTop + height + metrics.verticalSpacing,
                       buildNewVersionLine(updater).c_str());
 
-    const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_UPDATE), "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    if (confirmPopup.processRender(renderer, mappedInput)) return;
   } else if (state == UPDATE_IN_PROGRESS) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATING));
 
@@ -174,10 +190,10 @@ void OtaUpdateActivity::render(RenderLock&&) {
     // Percent label is drawn by BaseTheme::drawProgressBar; this slot is left intentionally empty
     // so the bytes line below stays at the same Y it was at when the activity drew its own percent.
     y += height + metrics.verticalSpacing;
-    renderer.drawCenteredText(UI_10_FONT_ID, y,
-                              (formatByteSizeCompact(updater.getProcessedSize()) + " / " +
-                               formatByteSizeCompact(updater.getTotalSize()))
-                                  .c_str());
+    renderer.drawCenteredText(
+        UI_10_FONT_ID, y,
+        (formatByteSizeCompact(updater.getProcessedSize()) + " / " + formatByteSizeCompact(updater.getTotalSize()))
+            .c_str());
   } else if (state == NO_UPDATE) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_NO_UPDATE), true, EpdFontFamily::BOLD);
     renderer.drawCenteredText(UI_10_FONT_ID, top + height + metrics.verticalSpacing,
@@ -208,76 +224,67 @@ void OtaUpdateActivity::render(RenderLock&&) {
   renderer.displayBuffer();
 }
 
+void OtaUpdateActivity::runUpdateInstall() {
+  LOG_DBG("OTA", "New update available, starting download...");
+  {
+    RenderLock lock(*this);
+    state = UPDATE_IN_PROGRESS;
+    lastUpdaterPercentage = UNINITIALIZED_PERCENTAGE;
+  }
+  requestUpdateAndWait();
+  NetworkMemory::prepareBeforeNetwork(renderer, "OTA", "pre-install");
+  const auto res = updater.installUpdate(
+      [](void* ctx) {
+        // immediate=true notifies the render task directly. The default deferred path only
+        // sets a flag consumed at the end of ActivityManager::loop(), which never runs while
+        // installUpdate() blocks this task.
+        static_cast<OtaUpdateActivity*>(ctx)->requestUpdate(true);
+      },
+      this);
+
+  if (res != OtaUpdater::OK) {
+    LOG_DBG("OTA", "Update failed: %d", res);
+    {
+      RenderLock lock(*this);
+      failedDetail = res == OtaUpdater::WRONG_DEVICE_ERROR ? tr(STR_FIRMWARE_WRONG_DEVICE) : nullptr;
+      state = FAILED;
+    }
+    requestUpdate();
+    return;
+  }
+
+  {
+    RenderLock lock(*this);
+    state = FINISHED;
+  }
+  requestUpdateAndWait();
+  // Hold the completion screen briefly so the user sees it, then restart.
+  delay(3000);
+  {
+    RenderLock lock(*this);
+    state = SHUTTING_DOWN;
+  }
+}
+
 void OtaUpdateActivity::loop() {
   if (state == WAITING_CONFIRMATION) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      LOG_DBG("OTA", "New update available, starting download...");
-      {
-        RenderLock lock(*this);
-        state = UPDATE_IN_PROGRESS;
-        lastUpdaterPercentage = UNINITIALIZED_PERCENTAGE;
-      }
-      requestUpdateAndWait();
-      NetworkMemory::prepareBeforeNetwork(renderer, "OTA", "pre-install");
-      const auto res = updater.installUpdate(
-          [](void* ctx) {
-            // immediate=true notifies the render task directly. The default deferred path only
-            // sets a flag consumed at the end of ActivityManager::loop(), which never runs while
-            // installUpdate() blocks this task.
-            static_cast<OtaUpdateActivity*>(ctx)->requestUpdate(true);
-          },
-          this);
-
-      if (res != OtaUpdater::OK) {
-        LOG_DBG("OTA", "Update failed: %d", res);
-        {
-          RenderLock lock(*this);
-          failedDetail = res == OtaUpdater::WRONG_DEVICE_ERROR ? tr(STR_FIRMWARE_WRONG_DEVICE) : nullptr;
-          state = FAILED;
-        }
-        requestUpdate();
-        return;
-      }
-
-      {
-        RenderLock lock(*this);
-        state = FINISHED;
-      }
-      requestUpdateAndWait();
-      // Hold the completion screen briefly so the user sees it, then restart.
-      delay(3000);
-      {
-        RenderLock lock(*this);
-        state = SHUTTING_DOWN;
-      }
-    }
-
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-      finish();
-    }
-
+    if (confirmPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
+    // Popup dismissed without a selection (Back button or tap outside): cancel.
+    finish();
     return;
   }
 
-  if (state == FAILED) {
+  if (state == FAILED || state == NO_UPDATE) {
+    // Confirm retries the check (release lookup may have failed transiently);
+    // Back or a screen tap leaves.
     if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
       checkForUpdateNow();
       requestUpdate();
       return;
     }
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-      finish();
-    }
-    return;
-  }
-
-  if (state == NO_UPDATE) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      checkForUpdateNow();
-      requestUpdate();
-      return;
-    }
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    int x = 0;
+    int y = 0;
+    if (mappedInput.wasPressed(MappedInputManager::Button::Back) || mappedInput.wasScreenTapped(x, y)) {
       finish();
     }
     return;

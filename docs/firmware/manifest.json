@@ -13,10 +13,37 @@
     "publishedAt": "2026-09-03T11:25:21Z",
     "assetUpdatedAt": "2026-09-03T11:25:21Z"
   },
+  "devices": {
+    "x4": {
+      "board": "x4",
+      "chipFamily": "ESP32-C3",
+      "environment": "gh_release",
+      "path": "firmware/firmware.bin",
+      "asset": "1.5.0.24-cpr-vcodex.bin",
+      "downloadUrl": "https://github.com/franssjz/cpr-vcodex/releases/download/1.5.0.24-cpr-vcodex/1.5.0.24-cpr-vcodex.bin",
+      "size": 6141856,
+      "sha256": "9d6f2dfcd5cf131b77c32b5bb27ee9fac9d593ada19dc89d0775cc5bd6146c09",
+      "appSlotSize": 6553600,
+      "assetUpdatedAt": "2026-09-03T11:25:21Z"
+    },
+    "x3": {
+      "board": "x4",
+      "chipFamily": "ESP32-C3",
+      "environment": "gh_release",
+      "path": "firmware/firmware.bin",
+      "asset": "1.5.0.24-cpr-vcodex.bin",
+      "downloadUrl": "https://github.com/franssjz/cpr-vcodex/releases/download/1.5.0.24-cpr-vcodex/1.5.0.24-cpr-vcodex.bin",
+      "size": 6141856,
+      "sha256": "9d6f2dfcd5cf131b77c32b5bb27ee9fac9d593ada19dc89d0775cc5bd6146c09",
+      "appSlotSize": 7798784,
+      "assetUpdatedAt": "2026-09-03T11:25:21Z"
+    }
+  },
   "new_install_prompt_erase": false,
   "builds": [
     {
       "chipFamily": "ESP32-C3",
+      "board": "x4",
       "parts": [
         {
           "path": "firmware.bin",

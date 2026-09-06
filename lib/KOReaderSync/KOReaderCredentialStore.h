@@ -100,6 +100,11 @@ class KOReaderCredentialStore {
   void setSyncBehavior(KOReaderSyncBehavior behavior);
   KOReaderSyncBehavior getSyncBehavior() const;
 
+  // Whether API calls target the CrossPoint sync server that supports protocol
+  // extensions (rich `position` payloads). Upstream parity; the fork default stays
+  // sync.koreader.rocks, so this is only true for an explicitly configured profile.
+  bool usesCrossPointSyncServer() const;
+
   static std::string hashPassword(const std::string& password);
   static std::string resolveBaseUrl(const std::string& serverUrl);
 

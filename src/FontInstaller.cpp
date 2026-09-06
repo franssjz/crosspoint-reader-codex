@@ -84,7 +84,7 @@ bool FontInstaller::ensureFamilyDir(const char* familyName) {
 }
 
 bool FontInstaller::validateCpfontFile(const char* path) {
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("FONT", path, file)) {
     LOG_ERR("FONT", "Cannot open for validation: %s", path);
     return false;
@@ -125,8 +125,8 @@ FontInstaller::Error FontInstaller::deleteFamily(const char* familyName) {
   // A family may exist in either root (or, edge case, both). Remove from both.
   char hiddenRoot[16];
   char visibleRoot[16];
-  const bool hasHidden = FsHelpers::resolveRootDirectoryIgnoreCase(SdCardFontRegistry::FONTS_DIR_HIDDEN, hiddenRoot,
-                                                                   sizeof(hiddenRoot));
+  const bool hasHidden =
+      FsHelpers::resolveRootDirectoryIgnoreCase(SdCardFontRegistry::FONTS_DIR_HIDDEN, hiddenRoot, sizeof(hiddenRoot));
   const bool hasVisible = FsHelpers::resolveRootDirectoryIgnoreCase(SdCardFontRegistry::FONTS_DIR_VISIBLE, visibleRoot,
                                                                     sizeof(visibleRoot));
   const char* roots[] = {hasHidden ? hiddenRoot : SdCardFontRegistry::FONTS_DIR_HIDDEN,
@@ -153,8 +153,7 @@ FontInstaller::Error FontInstaller::deleteFamily(const char* familyName) {
 
   // If this was the active font, clear the setting
   if (strcmp(SETTINGS.sdFontFamilyName, familyName) == 0) {
-    SETTINGS.sdFontFamilyName[0] = '\0';
-    SETTINGS.saveToFile();
+    SETTINGS.clearSdFontFamily();
     LOG_DBG("FONT", "Cleared active SD font (deleted family: %s)", familyName);
   }
 

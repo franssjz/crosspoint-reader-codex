@@ -34,7 +34,7 @@ std::string readSmallTextFile(const std::string& path) {
     return "";
   }
 
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("IFF", path, file)) {
     return "";
   }
@@ -103,23 +103,17 @@ std::string decodeUtf16(const std::string& value, const bool littleEndian, size_
   return out;
 }
 
-bool looksLikeUtf16Le(const std::string& value) {
-  return value.size() >= 4 && value[1] == '\0' && value[3] == '\0';
-}
+bool looksLikeUtf16Le(const std::string& value) { return value.size() >= 4 && value[1] == '\0' && value[3] == '\0'; }
 
-bool looksLikeUtf16Be(const std::string& value) {
-  return value.size() >= 4 && value[0] == '\0' && value[2] == '\0';
-}
+bool looksLikeUtf16Be(const std::string& value) { return value.size() >= 4 && value[0] == '\0' && value[2] == '\0'; }
 
 std::string normalizeTextEncoding(std::string value) {
   if (value.size() >= 3 && static_cast<uint8_t>(value[0]) == 0xEF && static_cast<uint8_t>(value[1]) == 0xBB &&
       static_cast<uint8_t>(value[2]) == 0xBF) {
     value.erase(0, 3);
-  } else if (value.size() >= 2 && static_cast<uint8_t>(value[0]) == 0xFF &&
-             static_cast<uint8_t>(value[1]) == 0xFE) {
+  } else if (value.size() >= 2 && static_cast<uint8_t>(value[0]) == 0xFF && static_cast<uint8_t>(value[1]) == 0xFE) {
     value = decodeUtf16(value, true, 2);
-  } else if (value.size() >= 2 && static_cast<uint8_t>(value[0]) == 0xFE &&
-             static_cast<uint8_t>(value[1]) == 0xFF) {
+  } else if (value.size() >= 2 && static_cast<uint8_t>(value[0]) == 0xFE && static_cast<uint8_t>(value[1]) == 0xFF) {
     value = decodeUtf16(value, false, 2);
   } else if (looksLikeUtf16Le(value)) {
     value = decodeUtf16(value, true, 0);

@@ -229,8 +229,7 @@ XtcError XtcParser::readFirstPageInfo() {
   m_defaultWidth = entry.width;
   m_defaultHeight = entry.height;
 
-  LOG_DBG("XTC", "Page table validated: %u pages, default %dx%d", m_header.pageCount, m_defaultWidth,
-          m_defaultHeight);
+  LOG_DBG("XTC", "Page table validated: %u pages, default %dx%d", m_header.pageCount, m_defaultWidth, m_defaultHeight);
   return XtcError::OK;
 }
 
@@ -556,7 +555,7 @@ XtcError XtcParser::loadPageStreaming(uint32_t pageIndex,
 }
 
 bool XtcParser::isValidXtcFile(const char* filepath) {
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("XTC", filepath, file)) {
     return false;
   }

@@ -5,8 +5,7 @@
 
 #include "FontInstaller.h"
 #include "SdCardFont.h"
-#include "activities/Activity.h"
-#include "util/ButtonNavigator.h"
+#include "activities/UiListActivity.h"
 
 // JSON schema version of the fonts.json manifest. The canonical version for
 // the build tooling lives in lib/EpdFont/scripts/cpfont_version.py. This
@@ -24,20 +23,22 @@
 // lib/EpdFont/scripts/cpfont_version.py.
 #define FONT_MANIFEST_URL_STRINGIFY_INNER(x) #x
 #define FONT_MANIFEST_URL_STRINGIFY(x) FONT_MANIFEST_URL_STRINGIFY_INNER(x)
-#define FONT_MANIFEST_URL_FOR_REPO(repo)                                                                          \
-  "https://github.com/" repo "/releases/download/sd-fonts-m" FONT_MANIFEST_URL_STRINGIFY(                         \
+#define FONT_MANIFEST_URL_FOR_REPO(repo)                                                  \
+  "https://github.com/" repo "/releases/download/sd-fonts-m" FONT_MANIFEST_URL_STRINGIFY( \
       FONTS_MANIFEST_VERSION) "-b" FONT_MANIFEST_URL_STRINGIFY(CPFONT_VERSION) "/fonts.json"
 #endif
 
-class FontDownloadActivity : public Activity {
+class FontDownloadActivity final : public UiListActivity {
  public:
   explicit FontDownloadActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
 
   void onEnter() override;
   void onExit() override;
-  void loop() override;
   void render(RenderLock&&) override;
   bool preventAutoSleep() override {
+    // WiFi is up from the source list onwards, and the download itself is
+    // synchronous (blocks the main loop until it completes, so
+    // activityManager.preventAutoSleep() is never polled during downloading).
     return state_ == SOURCE_LIST || state_ == LOADING_MANIFEST || state_ == DOWNLOADING || state_ == COMPLETE ||
            state_ == ERROR;
   }
@@ -46,8 +47,9 @@ class FontDownloadActivity : public Activity {
  private:
   enum State {
     WIFI_SELECTION,
-    SOURCE_LIST,
+    SOURCE_LIST,  // pick the manifest source (release repo) first
     LOADING_MANIFEST,
+    GROUP_LIST,
     FAMILY_LIST,
     DOWNLOADING,
     COMPLETE,
@@ -68,18 +70,27 @@ class FontDownloadActivity : public Activity {
     size_t totalSize = 0;
     bool installed = false;
     bool hasUpdate = false;
+    uint32_t scriptMask = 0;
   };
+
+  static constexpr size_t MAX_SCRIPT_GROUPS = 32;
 
   State state_ = WIFI_SELECTION;
   FontInstaller fontInstaller_;
-  ButtonNavigator buttonNavigator_;
+
+  // Manifest source (index into the static source table in the .cpp).
+  int sourceIndex_ = 0;
+  freeink::ui::ListNav sourceNav_;
 
   // Manifest data
   std::string baseUrl_;
   std::vector<ManifestFamily> families_;
-  int sourceIndex_ = 0;
-  int selectedSourceIndex_ = 0;
-  int selectedIndex_ = 0;
+  // Manifest-defined labels are dynamic; cap them at the 32-bit membership
+  // mask and retain only labels after parsing so group tags consume no steady-state heap.
+  std::vector<std::string> scriptGroupLabels_;
+  // One 4-byte index per manifest family, allocated once and reused for every group.
+  std::vector<int> filteredIndices_;
+  freeink::ui::ListNav groupNav_;
 
   // Download progress
   size_t currentFileIndex_ = 0;
@@ -89,8 +100,33 @@ class FontDownloadActivity : public Activity {
   int downloadingFamilyIndex_ = -1;
   std::string errorMessage_;
   bool cancelRequested_ = false;
+  // Set when the cancel came from the home gesture (consumed by the download
+  // callback's own input pump); exit to home after the abort unwinds.
+  bool goHomeRequested_ = false;
+
+  // Shared cache for source, group and family rows. It is rebuilt only when the
+  // visible list changes, never for cursor movement or tap flash repaints.
+  std::vector<std::string> rowLabels_;
+  std::vector<freeink::ui::ListItem> rowItems_;
+  bool rowsDirty_ = true;
+  void rebuildRowItems();
+  void rebuildSourceRowItems();
+  void rebuildGroupRowItems();
+  void rebuildFamilyRowItems();
+
+  int listCount() const override;
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  freeink::ui::ListNav& activeNav() override;
+  void onBackButton() override;
+  // Non-list states (loading, downloading, complete, error) consume the loop
+  // pass here; the source, group and family lists use the base list protocol.
+  bool handleCustomInput() override;
+
+  void activateSelected();
 
   void onWifiSelectionComplete(bool success);
+  void showSourceList();
   bool loadCurrentSourceManifest();
   bool fetchAndParseManifest();
   void downloadFamily(ManifestFamily& family);
@@ -106,8 +142,13 @@ class FontDownloadActivity : public Activity {
   void promptDeleteSelectedFamily();
   void onDeleteConfirmationResult(const ActivityResult& result);
   void releaseManifestMemory();
-  int familyIndexFromList(int listIndex) const { return listIndex - specialRowCount(); }
+  int familyIndexFromList(int listIndex) const;
   int listItemCount() const;
+  bool hasGroupScreen() const { return !scriptGroupLabels_.empty(); }
+  int groupListItemCount() const { return 1 + static_cast<int>(scriptGroupLabels_.size()); }
+  int groupMemberCount(int scriptGroupIndex) const;
+  void buildFilteredIndices(int groupListIndex);
+  void enterGroup(int groupListIndex);
   size_t totalDownloadSize() const;
   size_t totalUpdateSize() const;
   static std::string formatSize(size_t bytes);

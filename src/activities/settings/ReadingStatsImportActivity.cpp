@@ -11,8 +11,10 @@
 
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
+#include "components/UiAppHelpers.h"
 #include "util/HeaderDateUtils.h"
+
+namespace fui = freeink::ui;
 
 namespace {
 constexpr char READING_STATS_EXPORT_DIR[] = "/exports";
@@ -79,92 +81,77 @@ std::vector<std::string> ReadingStatsImportActivity::getImportPaths() {
   return paths;
 }
 
-void ReadingStatsImportActivity::onEnter() {
-  Activity::onEnter();
-  importPaths = getImportPaths();
-  selectedIndex = 0;
-  requestUpdate();
-}
-
-std::string ReadingStatsImportActivity::getDisplayName(const int index) const {
-  if (index < 0 || index >= static_cast<int>(importPaths.size())) {
-    return "";
+// Derives the row cache from importPaths. Called from onEnter(), never from
+// buildScreen().
+void ReadingStatsImportActivity::rebuildRowItems() {
+  rowNames.clear();
+  rowItems.clear();
+  rowNames.reserve(importPaths.size());
+  rowItems.reserve(importPaths.size());
+  for (const auto& path : importPaths) {
+    rowNames.push_back(fileNameFromPath(path));
   }
-  return fileNameFromPath(importPaths[static_cast<size_t>(index)]);
+  for (size_t i = 0; i < rowNames.size(); ++i) {
+    fui::ListItem item;
+    item.label = rowNames[i].c_str();
+    item.icon = listIconFor(UIIcon::File);
+    item.actionValue = static_cast<int16_t>(i);
+    rowItems.push_back(item);
+  }
 }
 
-void ReadingStatsImportActivity::finishWithSelection() {
-  if (importPaths.empty()) {
+void ReadingStatsImportActivity::onEnter() {
+  UiListActivity::onEnter();
+  importPaths = getImportPaths();
+  rebuildRowItems();
+}
+
+void ReadingStatsImportActivity::activateIndex(const int index) {
+  if (index < 0 || index >= static_cast<int>(importPaths.size())) {
     return;
   }
-
-  setResult(ActivityResult{FilePathResult{importPaths[selectedIndex]}});
+  app.clearTapFlash();  // the tap leaves this screen
+  setResult(ActivityResult{FilePathResult{importPaths[static_cast<size_t>(index)]}});
   finish();
 }
 
-void ReadingStatsImportActivity::loop() {
-  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    ActivityResult result;
-    result.isCancelled = true;
-    setResult(std::move(result));
-    finish();
-    return;
-  }
-
-  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-    finishWithSelection();
-    return;
-  }
-
-  const int itemCount = static_cast<int>(importPaths.size());
-  if (itemCount <= 0) {
-    return;
-  }
-
-  const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, false);
-  buttonNavigator.onNextRelease([this, itemCount] {
-    selectedIndex = static_cast<size_t>(ButtonNavigator::nextIndex(static_cast<int>(selectedIndex), itemCount));
-    requestUpdate();
-  });
-  buttonNavigator.onPreviousRelease([this, itemCount] {
-    selectedIndex = static_cast<size_t>(ButtonNavigator::previousIndex(static_cast<int>(selectedIndex), itemCount));
-    requestUpdate();
-  });
-  buttonNavigator.onNextContinuous([this, itemCount, pageItems] {
-    selectedIndex =
-        static_cast<size_t>(ButtonNavigator::nextPageIndex(static_cast<int>(selectedIndex), itemCount, pageItems));
-    requestUpdate();
-  });
-  buttonNavigator.onPreviousContinuous([this, itemCount, pageItems] {
-    selectedIndex =
-        static_cast<size_t>(ButtonNavigator::previousPageIndex(static_cast<int>(selectedIndex), itemCount, pageItems));
-    requestUpdate();
-  });
+void ReadingStatsImportActivity::onBackButton() {
+  ActivityResult result;
+  result.isCancelled = true;
+  setResult(std::move(result));
+  finish();
 }
 
-void ReadingStatsImportActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-
+void ReadingStatsImportActivity::drawChrome() {
   HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_IMPORT_READING_STATS), READING_STATS_EXPORT_DIR);
+}
 
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+void ReadingStatsImportActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  // Content below the header band, above the button hints.
+  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+
   if (importPaths.empty()) {
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, tr(STR_NO_READING_STATS_EXPORT));
-  } else {
-    GUI.drawList(
-        renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(importPaths.size()),
-        static_cast<int>(selectedIndex), [this](int index) { return getDisplayName(index); }, nullptr,
-        [](int) { return UIIcon::File; });
+    screen.centeredText(tr(STR_NO_READING_STATS_EXPORT), screen.theme().bodyText);
+    return;
   }
 
-  const auto labels =
-      mappedInput.mapLabels(tr(STR_BACK), importPaths.empty() ? "" : tr(STR_SELECT),
-                            importPaths.empty() ? "" : tr(STR_DIR_UP), importPaths.empty() ? "" : tr(STR_DIR_DOWN));
+  fui::ListProps props;
+  props.items = rowItems.data();
+  props.count = static_cast<uint16_t>(rowItems.size());
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
+  props.labelText = screen.theme().smallText;
+  props.labelText.maxLines = 2;
+  syncListViewport(screen, props);
+  screen.list(props);
+}
+
+void ReadingStatsImportActivity::drawFooter() {
+  const bool empty = importPaths.empty();
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), empty ? "" : tr(STR_SELECT), empty ? "" : tr(STR_DIR_UP),
+                                            empty ? "" : tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
 }

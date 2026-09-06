@@ -10,7 +10,7 @@ void writePod(std::ostream& os, const T& value) {
 }
 
 template <typename T>
-void writePod(FsFile& file, const T& value) {
+void writePod(HalFile& file, const T& value) {
   file.write(reinterpret_cast<const uint8_t*>(&value), sizeof(T));
 }
 
@@ -20,7 +20,7 @@ void readPod(std::istream& is, T& value) {
 }
 
 template <typename T>
-void readPod(FsFile& file, T& value) {
+void readPod(HalFile& file, T& value) {
   file.read(reinterpret_cast<uint8_t*>(&value), sizeof(T));
 }
 
@@ -30,7 +30,7 @@ inline void writeString(std::ostream& os, const std::string& s) {
   os.write(s.data(), len);
 }
 
-inline void writeString(FsFile& file, const std::string& s) {
+inline void writeString(HalFile& file, const std::string& s) {
   const uint32_t len = s.size();
   writePod(file, len);
   file.write(reinterpret_cast<const uint8_t*>(s.data()), len);
@@ -43,7 +43,7 @@ inline void readString(std::istream& is, std::string& s) {
   is.read(&s[0], len);
 }
 
-inline void readString(FsFile& file, std::string& s) {
+inline void readString(HalFile& file, std::string& s) {
   uint32_t len;
   readPod(file, len);
   s.resize(len);

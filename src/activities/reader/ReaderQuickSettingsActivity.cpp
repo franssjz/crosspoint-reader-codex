@@ -4,18 +4,22 @@
 #include <I18n.h>
 
 #include <algorithm>
+#include <cstdio>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "ReaderFontSizes.h"
 #include "SdCardFontGlobals.h"
 #include "activities/settings/FontSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/HeaderDateUtils.h"
 
+namespace fui = freeink::ui;
+
 namespace {
 
-std::string enumValueText(const uint8_t value, const std::vector<StrId>& labels) {
+const char* enumValueText(const uint8_t value, const std::vector<StrId>& labels) {
   if (labels.empty()) {
     return "";
   }
@@ -23,7 +27,7 @@ std::string enumValueText(const uint8_t value, const std::vector<StrId>& labels)
   return I18N.get(labels[safeIndex]);
 }
 
-std::string fontFamilyText() {
+const char* fontFamilyText() {
   if (SETTINGS.sdFontFamilyName[0] != '\0') {
     return SETTINGS.sdFontFamilyName;
   }
@@ -42,10 +46,7 @@ const std::vector<ReaderQuickSettingsActivity::QuickSetting>& ReaderQuickSetting
        {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15, StrId::STR_PAGES_30}},
       {StrId::STR_SUNLIGHT_FADING_FIX, QuickSettingType::Toggle, &CrossPointSettings::fadingFix},
       {StrId::STR_FONT_FAMILY, QuickSettingType::FontFamily},
-      {StrId::STR_FONT_SIZE,
-       QuickSettingType::Enum,
-       &CrossPointSettings::fontSize,
-       {StrId::STR_X_SMALL, StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE, StrId::STR_X_LARGE}},
+      {StrId::STR_FONT_SIZE, QuickSettingType::FontSize, &CrossPointSettings::fontPointSize},
       {StrId::STR_LINE_SPACING,
        QuickSettingType::Enum,
        &CrossPointSettings::lineSpacing,
@@ -85,9 +86,10 @@ const std::vector<ReaderQuickSettingsActivity::QuickSetting>& ReaderQuickSetting
   return quickSettings;
 }
 
-std::string ReaderQuickSettingsActivity::getSettingName(const int index) { return I18N.get(settings()[index].nameId); }
+size_t ReaderQuickSettingsActivity::settingCount() { return std::min(settings().size(), MAX_QUICK_SETTINGS); }
 
-std::string ReaderQuickSettingsActivity::getSettingValue(const int index) {
+const char* ReaderQuickSettingsActivity::settingValueText(const size_t index, char* scratch,
+                                                          const size_t scratchLen) const {
   const auto& setting = settings()[index];
   if (setting.type == QuickSettingType::FontFamily) {
     return fontFamilyText();
@@ -98,12 +100,18 @@ std::string ReaderQuickSettingsActivity::getSettingValue(const int index) {
   }
 
   const uint8_t value = SETTINGS.*(setting.valuePtr);
+  if (setting.type == QuickSettingType::FontSize) {
+    snprintf(scratch, scratchLen, "%u pt", static_cast<unsigned>(value));
+    return scratch;
+  }
+
   if (setting.type == QuickSettingType::Toggle) {
     return value ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
   }
 
   if (setting.type == QuickSettingType::Value) {
-    return std::to_string(value);
+    snprintf(scratch, scratchLen, "%u", static_cast<unsigned>(value));
+    return scratch;
   }
 
   return enumValueText(value, setting.enumValues);
@@ -131,16 +139,44 @@ void ReaderQuickSettingsActivity::applyImmediateRendererSetting(const QuickSetti
   }
 }
 
-void ReaderQuickSettingsActivity::onEnter() {
-  Activity::onEnter();
-  selectedIndex = 0;
-  requestUpdate();
+// Populates rowItems' labels/actionValue from settings(). Called once on
+// entry since the row set never changes; buildScreen() only refreshes values.
+void ReaderQuickSettingsActivity::buildRowItems() {
+  const size_t count = settingCount();
+  for (size_t i = 0; i < count; ++i) {
+    fui::ListItem item;
+    item.label = I18N.get(settings()[i].nameId);
+    item.actionValue = static_cast<int16_t>(i);
+    rowItems[i] = item;
+  }
 }
 
-void ReaderQuickSettingsActivity::toggleSelectedSetting() {
-  const auto& setting = settings()[selectedIndex];
+void ReaderQuickSettingsActivity::refreshRowValues() {
+  const size_t count = settingCount();
+  for (size_t i = 0; i < count; ++i) {
+    rowItems[i].value = settingValueText(i, valueScratch[i], VALUE_SCRATCH_LEN);
+  }
+}
+
+void ReaderQuickSettingsActivity::onEnter() {
+  UiListActivity::onEnter();
+  buildRowItems();
+}
+
+void ReaderQuickSettingsActivity::activateIndex(const int index) {
+  if (index < 0 || index >= listCount()) return;
+  nav.selected = index;
+  toggleSetting(index);
+  requestUpdate(true);
+}
+
+void ReaderQuickSettingsActivity::toggleSetting(const int index) {
+  const auto& setting = settings()[index];
 
   if (setting.type == QuickSettingType::FontFamily) {
+    // The font picker covers this screen; a lingering flash would gray an
+    // unrelated row when the list next appears.
+    app.clearTapFlash();
     sdFontSystem.refreshIfDirty();
     startActivityForResult(std::make_unique<FontSelectionActivity>(renderer, mappedInput, &sdFontSystem.registry()),
                            [this](const ActivityResult&) {
@@ -152,6 +188,27 @@ void ReaderQuickSettingsActivity::toggleSelectedSetting() {
   }
 
   if (setting.valuePtr == nullptr) {
+    return;
+  }
+
+  if (setting.type == QuickSettingType::FontSize) {
+    // Cycle through the point sizes the active family actually ships (built-in
+    // or SD card), wrapping back to the smallest after the largest.
+    const std::vector<uint8_t> sizes = readerFontPointSizes(&sdFontSystem.registry(), SETTINGS.sdFontFamilyName);
+    if (!sizes.empty()) {
+      const uint8_t current = snapToNearestPointSize(sizes, SETTINGS.fontPointSize);
+      uint8_t next = sizes.front();
+      for (size_t i = 0; i < sizes.size(); ++i) {
+        if (sizes[i] == current && i + 1 < sizes.size()) {
+          next = sizes[i + 1];
+          break;
+        }
+      }
+      SETTINGS.fontPointSize = next;
+    }
+    ensureSdFontLoaded();
+    applyImmediateRendererSetting(setting);
+    SETTINGS.saveToFile();
     return;
   }
 
@@ -169,67 +226,43 @@ void ReaderQuickSettingsActivity::toggleSelectedSetting() {
     }
   }
 
-  if (setting.valuePtr == &CrossPointSettings::fontSize) {
-    ensureSdFontLoaded();
-  }
-
   applyImmediateRendererSetting(setting);
   SETTINGS.saveToFile();
 }
 
-void ReaderQuickSettingsActivity::loop() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    finish();
-    return;
-  }
+void ReaderQuickSettingsActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  // Content: the safe area minus the header band drawChrome() paints.
+  screen.setContentMarginFromScreen(fui::Insets{
+      static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight),
+      static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width)),
+      static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height)), static_cast<int16_t>(safe.x)});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    toggleSelectedSetting();
-    requestUpdate(true);
-    return;
-  }
+  // rowItems' labels were set once in onEnter() (buildRowItems()); the values
+  // reflect live SETTINGS state, so refresh them on every build.
+  refreshRowValues();
 
-  const int settingCount = static_cast<int>(settings().size());
-  const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, false);
-
-  buttonNavigator.onNextRelease([this, settingCount] {
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, settingCount);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousRelease([this, settingCount] {
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, settingCount);
-    requestUpdate();
-  });
-
-  buttonNavigator.onNextContinuous([this, settingCount, pageItems] {
-    selectedIndex = ButtonNavigator::nextPageIndex(selectedIndex, settingCount, pageItems);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousContinuous([this, settingCount, pageItems] {
-    selectedIndex = ButtonNavigator::previousPageIndex(selectedIndex, settingCount, pageItems);
-    requestUpdate();
-  });
+  fui::ListProps props;
+  props.items = rowItems;
+  props.count = static_cast<uint16_t>(settingCount());
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
+  props.valueInset = 8;               // air between the value and the row edge
+  // Label at the value's font size: both sides of the row read as one unit.
+  // maxLines=2 also marks the style caller-owned (see textStyleUnset).
+  props.labelText = screen.theme().smallText;
+  props.labelText.maxLines = 2;
+  syncListViewport(screen, props);
+  screen.list(props);
 }
 
-void ReaderQuickSettingsActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-
+void ReaderQuickSettingsActivity::drawChrome() {
   HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_CAT_READER), tr(STR_SETTINGS_TITLE));
+}
 
-  GUI.drawList(
-      renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(settings().size()), selectedIndex,
-      [](const int index) { return getSettingName(index); }, nullptr, [](const int) { return UIIcon::Settings; },
-      [](const int index) { return getSettingValue(index); }, true);
-
+void ReaderQuickSettingsActivity::drawFooter() {
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_TOGGLE), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
 }

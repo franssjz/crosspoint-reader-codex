@@ -26,9 +26,9 @@
 #include "components/icons/settings.h"
 #include "components/icons/settings2.h"
 #include "components/icons/text24.h"
+#include "components/icons/transfer.h"
 #include "components/icons/trophy.h"
 #include "components/icons/trophy24.h"
-#include "components/icons/transfer.h"
 #include "components/icons/wifi.h"
 #include "fontIds.h"
 
@@ -46,10 +46,7 @@ constexpr int kProgressBadgePadX = 8;
 constexpr int kProgressBadgePadY = 4;
 constexpr int kProgressBadgeInset = 8;
 constexpr int kProgressBadgeRadius = 4;
-constexpr int kMenuIconSize = 32;
-constexpr int kMenuIconPad = 14;
 constexpr int kHighlightPad = 12;
-constexpr int kVisibleMenuSlots = 5;
 
 int lastCarouselSelectorIndex = -1;
 
@@ -109,8 +106,7 @@ const uint8_t* iconForName(UIIcon icon, int size) {
 
 void drawCoverPlaceholder(GfxRenderer& renderer, int x, int y, int maxW, int maxH) {
   renderer.drawRoundedRect(x, y, maxW, maxH, 1, kCornerRadius, true);
-  renderer.fillRoundedRect(x, y + maxH / 3, maxW, 2 * maxH / 3, kCornerRadius, false, false, true, true,
-                           Color::Black);
+  renderer.fillRoundedRect(x, y + maxH / 3, maxW, 2 * maxH / 3, kCornerRadius, false, false, true, true, Color::Black);
   renderer.drawIcon(CoverIcon, x + maxW / 2 - 16, y + 8, 32, 32);
 }
 
@@ -139,12 +135,35 @@ void drawProgressBadge(GfxRenderer& renderer, const RecentBook& book, const int 
   const int badgeY = coverY + coverH - badgeH - kProgressBadgeInset;
 
   renderer.fillRoundedRect(badgeX, badgeY, badgeW, badgeH, kProgressBadgeRadius, Color::Black);
-  renderer.drawText(SMALL_FONT_ID, badgeX + kProgressBadgePadX, badgeY + kProgressBadgePadY - 1,
-                    progressText.c_str(), false, EpdFontFamily::BOLD);
+  renderer.drawText(SMALL_FONT_ID, badgeX + kProgressBadgePadX, badgeY + kProgressBadgePadY - 1, progressText.c_str(),
+                    false, EpdFontFamily::BOLD);
 }
 }  // namespace
 
 void LyraCarouselTheme::setPreRenderIndex(int index) { lastCarouselSelectorIndex = index; }
+
+Rect LyraCarouselTheme::menuBandRect(const GfxRenderer& renderer) {
+  const int screenW = renderer.getScreenWidth();
+  const int rowY = renderer.getScreenHeight() - LyraCarouselMetrics::values.buttonHintsHeight - kMenuTileHeight;
+  return Rect{0, rowY, screenW, kMenuTileHeight};
+}
+
+int LyraCarouselTheme::menuWindowStart(const int buttonCount, const int selectedIndex) {
+  if (buttonCount <= 0) return 0;
+  const int visibleCount = std::min(buttonCount, kVisibleMenuSlots);
+  const int maxWindowStart = std::max(0, buttonCount - visibleCount);
+  if (selectedIndex < 0 || selectedIndex >= buttonCount) return 0;
+  return std::clamp(selectedIndex - visibleCount / 2, 0, maxWindowStart);
+}
+
+int LyraCarouselTheme::coverColumnAt(const GfxRenderer& renderer, const int x) {
+  const int centerX = (renderer.getScreenWidth() - kCenterCoverW) / 2;
+  if (x < centerX) return -1;
+  if (x >= centerX + kCenterCoverW) return 1;
+  return 0;
+}
+
+int LyraCarouselTheme::getMenuRowHeight(const GfxRenderer&) const { return kMenuTileHeight; }
 
 void LyraCarouselTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect,
                                             const std::vector<RecentBook>& recentBooks, const int selectorIndex,
@@ -178,8 +197,7 @@ void LyraCarouselTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect,
     bool hasCover = false;
     if (!book.coverBmpPath.empty()) {
       std::string thumbPath = UITheme::getCoverThumbPath(book.coverBmpPath, maxW, maxH);
-      const std::string centerThumbPath =
-          UITheme::getCoverThumbPath(book.coverBmpPath, kCenterCoverW, kCenterCoverH);
+      const std::string centerThumbPath = UITheme::getCoverThumbPath(book.coverBmpPath, kCenterCoverW, kCenterCoverH);
       const std::string legacyThumbPath =
           UITheme::getCoverThumbPath(book.coverBmpPath, LyraCarouselMetrics::values.homeCoverHeight);
       if (!Storage.exists(thumbPath.c_str())) {
@@ -189,7 +207,7 @@ void LyraCarouselTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect,
           thumbPath = legacyThumbPath;
         }
       }
-      FsFile file;
+      HalFile file;
       if (Storage.openFileForRead("HOME", thumbPath, file)) {
         Bitmap bitmap(file);
         if (bitmap.parseHeaders() == BmpReaderError::Ok) {
@@ -283,16 +301,14 @@ void LyraCarouselTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int but
 
   const int visibleCount = std::min(buttonCount, kVisibleMenuSlots);
   const int safeSelectedIndex = (selectedIndex >= 0 && selectedIndex < buttonCount) ? selectedIndex : -1;
-  const int maxWindowStart = std::max(0, buttonCount - visibleCount);
-  int windowStart = 0;
-  if (safeSelectedIndex >= 0) {
-    windowStart = std::clamp(safeSelectedIndex - visibleCount / 2, 0, maxWindowStart);
-  }
+  const int windowStart = menuWindowStart(buttonCount, selectedIndex);
 
-  const int screenW = renderer.getScreenWidth();
-  const int tileH = kMenuIconPad + kMenuIconSize + kMenuIconPad;
+  // Same geometry HomeActivity hit-tests against (menuBandRect / tile width).
+  const Rect band = menuBandRect(renderer);
+  const int screenW = band.width;
+  const int tileH = band.height;
   const int tileW = screenW / visibleCount;
-  const int rowY = renderer.getScreenHeight() - LyraCarouselMetrics::values.buttonHintsHeight - tileH;
+  const int rowY = band.y;
 
   renderer.fillRect(0, rowY, screenW, tileH, false);
 

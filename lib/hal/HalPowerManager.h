@@ -25,7 +25,11 @@ class HalPowerManager {
   SemaphoreHandle_t modeMutex = nullptr;  // Protect access to currentLockMode
 
  public:
-  static constexpr int LOW_POWER_FREQ = 10;                    // MHz
+#if BOARD_HAS_PSRAM
+  static constexpr int LOW_POWER_FREQ = 80;  // MHz
+#else
+  static constexpr int LOW_POWER_FREQ = 10;  // MHz
+#endif
   static constexpr unsigned long IDLE_POWER_SAVING_MS = 3000;  // ms
   static constexpr unsigned long BATTERY_POLL_MS = 1500;       // ms
 

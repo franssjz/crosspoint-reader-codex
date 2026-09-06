@@ -9,8 +9,10 @@
 #include "FlashcardSessionSummaryActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
+#include "components/UiAppHelpers.h"
 #include "util/HeaderDateUtils.h"
+
+namespace fui = freeink::ui;
 
 namespace {
 constexpr unsigned long DELETE_RECENT_FLASHCARD_HOLD_MS = 1000;
@@ -26,123 +28,148 @@ std::string buildDeckSubtitle(const FlashcardDeckRecord& record) {
 void FlashcardRecentsActivity::reloadDecks() {
   decks = FLASHCARDS.getRecentDecks();
   if (decks.empty()) {
-    selectedIndex = 0;
+    nav.selected = 0;
   } else {
-    selectedIndex = std::clamp(selectedIndex, 0, static_cast<int>(decks.size()) - 1);
+    nav.selected = std::clamp(nav.selected, 0, static_cast<int>(decks.size()) - 1);
+  }
+  rebuildRowItems();
+}
+
+void FlashcardRecentsActivity::rebuildRowItems() {
+  rowSubtitles.clear();
+  rowItems.clear();
+  rowSubtitles.reserve(decks.size());
+  rowItems.reserve(decks.size());
+  for (size_t i = 0; i < decks.size(); ++i) {
+    rowSubtitles.push_back(buildDeckSubtitle(decks[i]));
+    fui::ListItem item;
+    item.label = decks[i].title.c_str();
+    item.subtitle = rowSubtitles.back().c_str();
+    item.icon = listIconFor(UIIcon::Text, 32);
+    item.actionValue = static_cast<int16_t>(i);
+    rowItems.push_back(item);
   }
 }
 
-bool FlashcardRecentsActivity::openSelectedDeck() {
-  if (selectedIndex < 0 || selectedIndex >= static_cast<int>(decks.size())) {
-    return false;
-  }
-
-  const auto selectedDeck = decks[selectedIndex];
+void FlashcardRecentsActivity::openDeck(const int index) {
+  if (index < 0 || index >= static_cast<int>(decks.size())) return;
+  const auto selectedDeck = decks[index];
   startActivityForResult(std::make_unique<FlashcardReviewActivity>(renderer, mappedInput, selectedDeck.path),
                          [this](const ActivityResult& result) {
-                           reloadDecks();
+                           {
+                             RenderLock lock(*this);
+                             reloadDecks();
+                           }
                            if (const auto* session = std::get_if<FlashcardSessionResult>(&result.data)) {
-                             startActivityForResult(std::make_unique<FlashcardSessionSummaryActivity>(renderer, mappedInput, *session),
-                                                    [this](const ActivityResult&) {
-                                                      reloadDecks();
-                                                      requestUpdate();
-                                                    });
+                             startActivityForResult(
+                                 std::make_unique<FlashcardSessionSummaryActivity>(renderer, mappedInput, *session),
+                                 [this](const ActivityResult&) {
+                                   {
+                                     RenderLock lock(*this);
+                                     reloadDecks();
+                                   }
+                                   requestUpdate();
+                                 });
                              return;
                            }
                            requestUpdate();
                          });
-  return true;
+}
+
+void FlashcardRecentsActivity::confirmRemoveDeck(const int index) {
+  if (index < 0 || index >= static_cast<int>(decks.size())) return;
+  const FlashcardDeckRecord selectedDeck = decks[index];
+  const size_t currentSelection = static_cast<size_t>(index);
+  startActivityForResult(
+      std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_FROM_RECENTS), selectedDeck.title),
+      [this, selectedDeck, currentSelection](const ActivityResult& result) {
+        if (!result.isCancelled) {
+          FLASHCARDS.removeRecentDeck(selectedDeck.deckId);
+          closeRouting();
+          RenderLock lock(*this);
+          reloadDecks();
+          if (decks.empty()) {
+            nav.selected = 0;
+          } else if (currentSelection >= decks.size()) {
+            nav.selected = static_cast<int>(decks.size()) - 1;
+          } else {
+            nav.selected = static_cast<int>(currentSelection);
+          }
+          nav.follow(listCount());
+        }
+        requestUpdate(true);
+      });
 }
 
 void FlashcardRecentsActivity::onEnter() {
-  Activity::onEnter();
+  UiListActivity::onEnter();
   reloadDecks();
-  requestUpdate();
 }
 
-void FlashcardRecentsActivity::loop() {
-  const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, true);
+void FlashcardRecentsActivity::onExit() {
+  Activity::onExit();
+  rowItems.clear();
+  rowSubtitles.clear();
+  decks.clear();
+}
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    finish();
-    return;
-  }
-
+bool FlashcardRecentsActivity::handleButtons() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (selectedIndex >= 0 && selectedIndex < static_cast<int>(decks.size()) &&
-        mappedInput.getHeldTime() >= DELETE_RECENT_FLASHCARD_HOLD_MS) {
-      const FlashcardDeckRecord selectedDeck = decks[selectedIndex];
-      const size_t currentSelection = selectedIndex;
-      startActivityForResult(
-          std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_FROM_RECENTS), selectedDeck.title),
-          [this, selectedDeck, currentSelection](const ActivityResult& result) {
-            if (!result.isCancelled) {
-              FLASHCARDS.removeRecentDeck(selectedDeck.deckId);
-              reloadDecks();
-              if (decks.empty()) {
-                selectedIndex = 0;
-              } else if (currentSelection >= decks.size()) {
-                selectedIndex = static_cast<int>(decks.size()) - 1;
-              } else {
-                selectedIndex = static_cast<int>(currentSelection);
-              }
-            }
-            requestUpdate(true);
-          });
-      return;
+    if (nav.selected >= 0 && nav.selected < listCount()) {
+      if (mappedInput.getHeldTime() >= DELETE_RECENT_FLASHCARD_HOLD_MS) {
+        confirmRemoveDeck(nav.selected);
+      } else {
+        activateIndex(nav.selected);
+      }
     }
-
-    (void)openSelectedDeck();
-    return;
+    return true;
   }
-
-  buttonNavigator.onNextRelease([this] {
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, static_cast<int>(decks.size()));
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousRelease([this] {
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, static_cast<int>(decks.size()));
-    requestUpdate();
-  });
-
-  buttonNavigator.onNextContinuous([this, pageItems] {
-    selectedIndex = ButtonNavigator::nextPageIndex(selectedIndex, static_cast<int>(decks.size()), pageItems);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousContinuous([this, pageItems] {
-    selectedIndex = ButtonNavigator::previousPageIndex(selectedIndex, static_cast<int>(decks.size()), pageItems);
-    requestUpdate();
-  });
+  return UiListActivity::handleButtons();
 }
 
-void FlashcardRecentsActivity::render(RenderLock&&) {
-  renderer.clearScreen();
+void FlashcardRecentsActivity::activateIndex(const int index) {
+  if (index < 0 || index >= listCount()) return;
+  app.clearTapFlash();
+  nav.selected = index;
+  openDeck(index);
+}
 
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+void FlashcardRecentsActivity::onRowLongPress(const int index) {
+  if (index < 0 || index >= listCount()) return;
+  app.clearTapFlash();
+  nav.selected = index;
+  confirmRemoveDeck(index);
+}
 
+void FlashcardRecentsActivity::drawChrome() {
   HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_FLASHCARDS), tr(STR_RECENTS));
+}
+
+void FlashcardRecentsActivity::drawFooter() {
+  const auto labels =
+      mappedInput.mapLabels(tr(STR_BACK), decks.empty() ? "" : tr(STR_OPEN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void FlashcardRecentsActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
   if (decks.empty()) {
-    renderer.drawCenteredText(UI_10_FONT_ID, contentTop + 24, tr(STR_NO_ENTRIES));
-  } else {
-    GUI.drawList(renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(decks.size()), selectedIndex,
-                 [this](const int index) { return decks[index].title; },
-                 [this](const int index) { return buildDeckSubtitle(decks[index]); },
-                 [](const int) { return UIIcon::Text; });
+    screen.centeredText(tr(STR_NO_ENTRIES), screen.theme().bodyText);
+    return;
   }
 
-  if (!transientMessage.empty() && millis() < transientUntilMs) {
-    renderer.drawCenteredText(SMALL_FONT_ID, contentTop + contentHeight - 18, transientMessage.c_str());
-  }
-
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), decks.empty() ? "" : tr(STR_OPEN), tr(STR_DIR_UP),
-                                            tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+  fui::ListProps props;
+  props.items = rowItems.data();
+  props.count = static_cast<uint16_t>(rowItems.size());
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch | fui::InputLongPress;  // tap opens, long-press removes
+  fui::TextStyle label = screen.theme().smallText;
+  label.bold = true;
+  props.labelText = label;
+  syncListViewport(screen, props, /*hasSubtitle=*/true);
+  screen.list(props);
 }

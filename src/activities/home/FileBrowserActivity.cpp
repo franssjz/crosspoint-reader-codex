@@ -8,85 +8,40 @@
 
 #include <algorithm>
 
-#include "../util/ConfirmationActivity.h"
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "ReadingStatsStore.h"
+#include "activities/util/ConfirmationActivity.h"
+#include "completedBadgeIcon.h"
 #include "components/UITheme.h"
+#include "components/UiAppHelpers.h"
 #include "fontIds.h"
 #include "util/BookCacheUtils.h"
+
+namespace fui = freeink::ui;
 
 namespace {
 constexpr unsigned long GO_HOME_MS = 1000;
 constexpr size_t NAME_BUFFER_SIZE = 500;
 }  // namespace
 
-void sortFileList(std::vector<std::string>& strs) {
-  std::sort(begin(strs), end(strs), [](const std::string& str1, const std::string& str2) {
-    // Directories first
-    bool isDir1 = str1.back() == '/';
-    bool isDir2 = str2.back() == '/';
-    if (isDir1 != isDir2) return isDir1;
+std::string getFileName(std::string filename);
+std::string getFileExtension(const std::string& filename);
 
-    // Start naive natural sort
-    const char* s1 = str1.c_str();
-    const char* s2 = str2.c_str();
-
-    // Iterate while both strings have characters
-    while (*s1 && *s2) {
-      // Check if both are at the start of a number
-      if (isdigit(*s1) && isdigit(*s2)) {
-        // Skip leading zeros and track them
-        const char* start1 = s1;
-        const char* start2 = s2;
-        while (*s1 == '0') s1++;
-        while (*s2 == '0') s2++;
-
-        // Count digits to compare lengths first
-        int len1 = 0, len2 = 0;
-        while (isdigit(s1[len1])) len1++;
-        while (isdigit(s2[len2])) len2++;
-
-        // Different length so return smaller integer value
-        if (len1 != len2) return len1 < len2;
-
-        // Same length so compare digit by digit
-        for (int i = 0; i < len1; i++) {
-          if (s1[i] != s2[i]) return s1[i] < s2[i];
-        }
-
-        // Numbers equal so advance pointers
-        s1 += len1;
-        s2 += len2;
-      } else {
-        // Regular case-insensitive character comparison
-        char c1 = tolower(*s1);
-        char c2 = tolower(*s2);
-        if (c1 != c2) return c1 < c2;
-        s1++;
-        s2++;
-      }
-    }
-
-    // One string is prefix of other
-    return *s1 == '\0' && *s2 != '\0';
-  });
-}
+FileBrowserActivity::FileBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                         std::string initialPath, const Mode mode)
+    : UiListActivity("FileBrowser", renderer, mappedInput, /*wantsTouchLongPress=*/true),
+      mode(mode),
+      basepath(initialPath.empty() ? "/" : std::move(initialPath)) {}
 
 void FileBrowserActivity::loadFiles() {
-  const std::string loadedBasepath = basepath;
-  std::vector<std::string> loadedFiles;
-  std::vector<uint8_t> loadedCompletedFileStates;
-  const auto publishSnapshot = [this, &loadedFiles, &loadedCompletedFileStates]() {
-    RenderLock lock(*this);
-    files.swap(loadedFiles);
-    completedFileStates.swap(loadedCompletedFileStates);
-  };
+  files.clear();
+  completedFileStates.clear();
 
-  auto root = Storage.open(loadedBasepath.c_str());
+  auto root = Storage.open(basepath.c_str());
   if (!root || !root.isDirectory()) {
     if (root) root.close();
-    publishSnapshot();
+    rebuildRowItems();  // files is empty; also drops any now-stale cached rows
     return;
   }
 
@@ -95,57 +50,102 @@ void FileBrowserActivity::loadFiles() {
   if (!fileNameBuffer) {
     LOG_ERR("FileBrowser", "fileNameBuffer not allocated");
     root.close();
-    publishSnapshot();
+    rebuildRowItems();
     return;
   }
 
   for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
     file.getName(fileNameBuffer.get(), NAME_BUFFER_SIZE);
+    const bool isDirectory = file.isDirectory();
     if ((!SETTINGS.showHiddenFiles && fileNameBuffer[0] == '.') ||
         strcmp(fileNameBuffer.get(), "System Volume Information") == 0) {
       file.close();
       continue;
     }
 
-    if (file.isDirectory()) {
-      loadedFiles.emplace_back(std::string(fileNameBuffer.get()) + "/");
+    if (isDirectory) {
+      files.emplace_back(std::string(fileNameBuffer.get()) + "/");
     } else {
       std::string_view filename{fileNameBuffer.get()};
-      if ((mode == Mode::PickFirmware && FsHelpers::checkFileExtension(filename, ".bin")) ||
-          (mode == Mode::Books && (FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
-                                   FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename) ||
-                                   FsHelpers::hasBmpExtension(filename)))) {
-        loadedFiles.emplace_back(filename);
+      if (mode == Mode::PickFirmware) {
+        // Firmware picker: only show .bin files.
+        if (FsHelpers::checkFileExtension(filename, ".bin")) {
+          files.emplace_back(filename);
+        }
+      } else if (FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
+                 FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename) ||
+                 FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename)) {
+        files.emplace_back(filename);
       }
     }
     file.close();
   }
   root.close();
-  sortFileList(loadedFiles);
+  FsHelpers::sortFileList(files);
 
-  loadedCompletedFileStates.reserve(loadedFiles.size());
-  std::string fullPathPrefix = loadedBasepath;
+  // Completed-book markers (reading stats), keyed by full path.
+  completedFileStates.reserve(files.size());
+  std::string fullPathPrefix = basepath;
   if (fullPathPrefix.empty() || fullPathPrefix.back() != '/') {
     fullPathPrefix += "/";
   }
-
-  for (const auto& entry : loadedFiles) {
+  for (const auto& entry : files) {
     if (entry.empty() || entry.back() == '/') {
-      loadedCompletedFileStates.push_back(0);
+      completedFileStates.push_back(0);
       continue;
     }
-
     const auto* statsBook = READING_STATS.findBook(fullPathPrefix + entry);
-    loadedCompletedFileStates.push_back((statsBook != nullptr && statsBook->completed) ? 1 : 0);
+    completedFileStates.push_back((statsBook != nullptr && statsBook->completed) ? 1 : 0);
   }
 
-  // Rendering runs on a separate task. Publish the fully built snapshot in one
-  // short critical section so callbacks never observe a vector mid-reallocation.
-  publishSnapshot();
+  rebuildRowItems();
+}
+
+// Derives rowNames/rowExtensions/rowItems from `files`. Called whenever
+// `files` changes (end of loadFiles()) so buildScreen() can reuse the cached
+// rows on every repaint instead of re-deriving a name/extension string (and a
+// ListItem) per file each time it's called.
+void FileBrowserActivity::rebuildRowItems() {
+  rowsUseFileIcons = UITheme::getInstance().getTheme().showsFileIcons();
+  rowNames.resize(files.size());
+  rowExtensions.resize(files.size());
+  rowItems.clear();
+  rowItems.reserve(files.size());
+  for (size_t i = 0; i < files.size(); i++) {
+    rowNames[i] = getFileName(files[i]);
+    rowExtensions[i] = SETTINGS.hideFileExtension ? std::string() : getFileExtension(files[i]);
+    fui::ListItem item;
+    item.label = rowNames[i].c_str();
+    if (!rowExtensions[i].empty()) item.value = rowExtensions[i].c_str();
+    // Completed books (reading stats) swap the file icon for the check badge.
+    const bool completed = i < completedFileStates.size() && completedFileStates[i] != 0;
+    item.icon = completed ? fui::bitmapFromIcon(icon_completed_badge_24) : listIconFor(UITheme::getFileIcon(files[i]));
+    item.actionValue = static_cast<int16_t>(i);
+    rowItems.push_back(item);
+  }
+
+  // One SD pass for every CJK filename in the folder; repaints then hit the
+  // resident tables instead of re-reading per-string. Getter form: no
+  // concatenated copy (a bare-new string append aborts under heap pressure).
+  // The last index covers the bottom path band: basepath (possibly a CJK
+  // folder name) draws in the same small font, so it must live in the same
+  // batch or it would evict the rows' glyphs when the heap gate disables
+  // union merging. (prewarmFallbackText appends the truncation ellipsis.)
+  struct PrewarmCtx {
+    const std::vector<std::string>* names;
+    const std::string* path;
+  } prewarmCtx{&rowNames, &basepath};
+  renderer.prewarmFallbackText(
+      uiScaleSpec().smallFontId,
+      [](const void* ctx, uint32_t i) -> const char* {
+        const auto* c = static_cast<const PrewarmCtx*>(ctx);
+        return i < c->names->size() ? (*c->names)[i].c_str() : c->path->c_str();
+      },
+      &prewarmCtx, static_cast<uint32_t>(rowNames.size()) + 1);
 }
 
 void FileBrowserActivity::onEnter() {
-  Activity::onEnter();
+  UiListActivity::onEnter();
 
   fileNameBuffer = makeUniqueNoThrow<char[]>(NAME_BUFFER_SIZE);
   if (!fileNameBuffer) {
@@ -153,36 +153,31 @@ void FileBrowserActivity::onEnter() {
     return;
   }
 
-  selectorIndex = 0;
-
   auto root = Storage.open(basepath.c_str());
   if (!root) {
     basepath = "/";
     loadFiles();
   } else if (!root.isDirectory()) {
-    root.close();
-    lockLongPressBack = mappedInput.isPressed(MappedInputManager::Button::Back);
-
     const std::string oldPath = basepath;
     basepath = FsHelpers::extractFolderPath(basepath);
     loadFiles();
 
     const auto pos = oldPath.find_last_of('/');
     const std::string fileName = oldPath.substr(pos + 1);
-    selectorIndex = findEntry(fileName);
+    // The first screen build pulls the viewport to it (ListNav follow-on-build).
+    nav.selected = static_cast<int>(findEntry(fileName));
   } else {
-    root.close();
     loadFiles();
   }
-
-  requestUpdate();
 }
 
 void FileBrowserActivity::onExit() {
   Activity::onExit();
-  // ActivityManager calls onExit while already holding RenderLock.
   files.clear();
   completedFileStates.clear();
+  rowNames.clear();
+  rowExtensions.clear();
+  rowItems.clear();
   fileNameBuffer.reset();
 }
 
@@ -267,84 +262,128 @@ bool FileBrowserActivity::removeDirFile(const std::string& fullPath) {
   return true;
 }
 
-void FileBrowserActivity::loop() {
-  // Long press BACK (1s+) goes to root folder
-  // but Long press BACK (1s+) from ReaderActivity sends us here with the MappedInput already set.
-  // So ignore it the first time.
-  if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= GO_HOME_MS &&
-      basepath != "/" && !lockLongPressBack) {
-    basepath = "/";
-    loadFiles();
-    selectorIndex = 0;
-    requestUpdate();
+void FileBrowserActivity::activateIndex(const int index) {
+  (void)index;  // base already synced nav.selected to the tapped row
+  // Activation navigates or opens; a lingering flash would gray an unrelated
+  // row on the next list.
+  app.clearTapFlash();
+  activateSelected();
+}
+
+void FileBrowserActivity::onRowLongPress(const int index) {
+  (void)index;  // base already synced nav.selected to the pressed row
+  // Activation navigates or opens; a lingering flash would gray an unrelated
+  // row on the next list.
+  app.clearTapFlash();
+  activateSelected(/*forceDelete=*/true);
+}
+
+void FileBrowserActivity::activateSelected(const bool forceDelete) {
+  if (files.empty()) return;
+  // A touch activation can carry a row index captured before a delete/reload
+  // shrank the list; the next render re-registers the rows.
+  if (nav.selected < 0 || nav.selected >= listCount()) return;
+
+  const std::string& entry = files[nav.selected];
+  bool isDirectory = (entry.back() == '/');
+
+  // Firmware picker: select file -> return path; navigate into directories normally.
+  if (mode == Mode::PickFirmware && !isDirectory) {
+    std::string cleanBasePath = basepath;
+    if (cleanBasePath.back() != '/') cleanBasePath += "/";
+    ActivityResult res{FilePathResult{cleanBasePath + entry}};
+    res.isCancelled = false;
+    setResult(std::move(res));
+    finish();
     return;
   }
 
-  if (lockLongPressBack && mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    lockLongPressBack = false;
-    return;
-  }
+  if (mode == Mode::Books && (forceDelete || mappedInput.getHeldTime() >= GO_HOME_MS)) {
+    // --- LONG PRESS ACTION: DELETE FILE OR DIRECTORY ---
+    std::string cleanBasePath = basepath;
+    if (cleanBasePath.back() != '/') cleanBasePath += "/";
+    const std::string fullPath = cleanBasePath + entry;
 
-  const int pathReserved = renderer.getLineHeight(SMALL_FONT_ID) + UITheme::getInstance().getMetrics().verticalSpacing;
-  const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, false, pathReserved);
-
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (files.empty()) return;
-
-    const std::string& entry = files[selectorIndex];
-    bool isDirectory = (entry.back() == '/');
-
-    if (mode == Mode::Books && mappedInput.getHeldTime() >= GO_HOME_MS) {
-      // --- LONG PRESS ACTION: DELETE FILE OR DIRECTORY ---
-      std::string cleanBasePath = basepath;
-      if (cleanBasePath.back() != '/') cleanBasePath += "/";
-      const std::string fullPath = cleanBasePath + entry;
-
-      auto handler = [this, fullPath](const ActivityResult& res) {
-        if (!res.isCancelled) {
-          LOG_DBG("FileBrowser", "Attempting to delete: %s", fullPath.c_str());
-          if (removeDirFile(fullPath)) {
-            LOG_DBG("FileBrowser", "Deleted successfully");
+    auto handler = [this, fullPath](const ActivityResult& res) {
+      if (!res.isCancelled) {
+        LOG_DBG("FileBrowser", "Attempting to delete: %s", fullPath.c_str());
+        if (removeDirFile(fullPath)) {
+          LOG_DBG("FileBrowser", "Deleted successfully");
+          {
+            // buildScreen() reads the row caches on the render task; see loop().
+            RenderLock lock(*this);
             loadFiles();
             if (files.empty()) {
-              selectorIndex = 0;
-            } else if (selectorIndex >= files.size()) {
+              nav.selected = 0;
+            } else if (nav.selected >= listCount()) {
               // Move selection to the new "last" item
-              selectorIndex = files.size() - 1;
+              nav.selected = listCount() - 1;
             }
-
-            requestUpdate(true);
-          } else {
-            LOG_ERR("FileBrowser", "Failed to delete file: %s", fullPath.c_str());
+            nav.follow(listCount());
           }
+
+          requestUpdate(true);
         } else {
-          LOG_DBG("FileBrowser", "Delete cancelled by user");
+          LOG_ERR("FileBrowser", "Failed to delete: %s", fullPath.c_str());
         }
-      };
+      } else {
+        LOG_DBG("FileBrowser", "Delete cancelled by user");
+      }
+    };
 
-      std::string heading = tr(STR_DELETE) + std::string("? ");
+    std::string heading = tr(STR_DELETE) + std::string("? ");
 
-      startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, entry), handler);
-      return;
-    }
-
+    startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, entry), handler);
+    return;
+  } else {
+    // --- SHORT PRESS ACTION: OPEN/NAVIGATE ---
+    // buildScreen() runs on the render task and reads basepath plus the
+    // ListItem label/value pointers into rowNames/rowExtensions that
+    // rebuildRowItems() frees; mutate only under the render lock.
+    RenderLock lock(*this);
     if (basepath.back() != '/') basepath += "/";
 
     if (isDirectory) {
       basepath += entry.substr(0, entry.length() - 1);
       loadFiles();
-      selectorIndex = 0;
+      nav.selected = 0;
+      nav.top = 0;
+      lock.unlock();
       requestUpdate();
     } else {
-      const std::string selectedPath = basepath + entry;
-      if (mode == Mode::PickFirmware) {
-        setResult(ActivityResult{FilePathResult{selectedPath}});
-        finish();
-      } else {
-        onSelectBook(selectedPath);
-      }
+      const std::string fullPath = basepath + entry;
+      lock.unlock();  // onSelectBook launches an activity; don't hold the lock across it
+      onSelectBook(fullPath);
     }
-    return;
+  }
+  return;
+}
+
+bool FileBrowserActivity::handleCustomInput() {
+  // Long press BACK (1s+) goes to root folder (Books mode only).
+  // In firmware-pick mode we keep navigation simple: short Back = up dir / cancel.
+  if (mode == Mode::Books && mappedInput.wasReleased(MappedInputManager::Button::Back) &&
+      mappedInput.getHeldTime() >= GO_HOME_MS && basepath != "/") {
+    {
+      // buildScreen() runs on the render task and reads basepath plus the
+      // row caches rebuildRowItems() frees; mutate only under the render lock.
+      RenderLock lock(*this);
+      basepath = "/";
+      loadFiles();
+      nav.selected = 0;
+      nav.top = 0;
+    }
+    requestUpdate();
+    return true;
+  }
+
+  return false;
+}
+
+bool FileBrowserActivity::handleButtons() {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    activateSelected();
+    return true;
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
@@ -353,41 +392,36 @@ void FileBrowserActivity::loop() {
       if (basepath != "/") {
         const std::string oldPath = basepath;
 
-        basepath.replace(basepath.find_last_of('/'), std::string::npos, "");
-        if (basepath.empty()) basepath = "/";
-        loadFiles();
+        {
+          // buildScreen() runs on the render task and reads basepath plus the
+          // row caches rebuildRowItems() frees; mutate only under the render lock.
+          RenderLock lock(*this);
+          basepath.replace(basepath.find_last_of('/'), std::string::npos, "");
+          if (basepath.empty()) basepath = "/";
+          loadFiles();
 
-        const auto pos = oldPath.find_last_of('/');
-        const std::string dirName = oldPath.substr(pos + 1) + "/";
-        selectorIndex = findEntry(dirName);
+          const auto pos = oldPath.find_last_of('/');
+          const std::string dirName = oldPath.substr(pos + 1) + "/";
+          nav.selected = static_cast<int>(findEntry(dirName));
+          nav.top = 0;
+          nav.follow(listCount());
+        }
 
         requestUpdate();
+      } else if (mode == Mode::PickFirmware) {
+        // Firmware picker at root: cancel back to caller instead of going home.
+        ActivityResult res;
+        res.isCancelled = true;
+        setResult(std::move(res));
+        finish();
       } else {
         onGoHome();
       }
     }
+    return true;
   }
 
-  int listSize = static_cast<int>(files.size());
-  buttonNavigator.onNextRelease([this, listSize] {
-    selectorIndex = ButtonNavigator::nextIndex(static_cast<int>(selectorIndex), listSize);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousRelease([this, listSize] {
-    selectorIndex = ButtonNavigator::previousIndex(static_cast<int>(selectorIndex), listSize);
-    requestUpdate();
-  });
-
-  buttonNavigator.onNextContinuous([this, listSize, pageItems] {
-    selectorIndex = ButtonNavigator::nextPageIndex(static_cast<int>(selectorIndex), listSize, pageItems);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousContinuous([this, listSize, pageItems] {
-    selectorIndex = ButtonNavigator::previousPageIndex(static_cast<int>(selectorIndex), listSize, pageItems);
-    requestUpdate();
-  });
+  return false;
 }
 
 std::string getFileName(std::string filename) {
@@ -402,7 +436,7 @@ std::string getFileName(std::string filename) {
   return filename.substr(0, pos);
 }
 
-std::string getFileExtension(std::string filename) {
+std::string getFileExtension(const std::string& filename) {
   if (filename.back() == '/') {
     return "";
   }
@@ -410,89 +444,109 @@ std::string getFileExtension(std::string filename) {
   return filename.substr(pos);
 }
 
-void FileBrowserActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
+void FileBrowserActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
+  // Content below the GUI.drawHeader band, above the button hints.
+  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
-  std::string folderName = (basepath == "/") ? tr(STR_SD_CARD) : basepath.substr(basepath.rfind('/') + 1);
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, folderName.c_str());
-
-  const int pathLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
-  const int pathReserved = pathLineHeight + metrics.verticalSpacing;
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight =
-      pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing - pathReserved;
-  if (files.empty()) {
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, tr(STR_NO_FILES_FOUND));
-  } else {
-    const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, false, pathReserved);
-    const size_t first = (selectorIndex / pageItems) * pageItems;
-    const size_t count = std::min(files.size() - first, static_cast<size_t>(pageItems));
-    struct PrewarmCtx {
-      const std::vector<std::string>* files;
-      size_t first;
-    } ctx{&files, first};
-    const auto getter = [](const void* raw, uint32_t i) -> const char* {
-      const auto* context = static_cast<const PrewarmCtx*>(raw);
-      return (*context->files)[context->first + i].c_str();
-    };
-    renderer.prewarmFallbackText(UI_10_FONT_ID, getter, &ctx, count);
-    renderer.prewarmFallbackText(SMALL_FONT_ID, getter, &ctx, count);
-    GUI.drawList(
-        renderer, Rect{0, contentTop, pageWidth, contentHeight}, files.size(), selectorIndex,
-        [this](int index) { return getFileName(files[index]); }, nullptr,
-        [this](int index) { return UITheme::getFileIcon(files[index]); },
-        [this](int index) {
-          return SETTINGS.hideFileExtension ? std::string() : getFileExtension(files[index]);
-        },
-        false,
-        [this](int index) {
-          return index >= 0 && index < static_cast<int>(completedFileStates.size()) && completedFileStates[index] != 0;
-        });
-  }
-
-  // Show the selected entry in full when it fits. When it does not, preserve
-  // the suffix here because the list row already shows the beginning; this is
-  // especially useful for books whose distinguishing text is near the end.
+  // Info band at the bottom: separator on top. Shows the selected entry's full
+  // name (the list row already shows its beginning, so keep the suffix here:
+  // books whose distinguishing text is near the end stay tellable apart), or
+  // the current path when the folder is empty. Left-truncated either way.
   {
-    const int pathY = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - pathLineHeight;
-    const int separatorY = pathY - metrics.verticalSpacing / 2;
-    renderer.drawLine(0, separatorY, pageWidth - 1, separatorY, 3, true);
-    const int infoMaxWidth = pageWidth - metrics.contentSidePadding * 2;
-    const bool hasSelection = !files.empty() && selectorIndex >= 0 && selectorIndex < static_cast<int>(files.size());
-    const char* infoStr = hasSelection ? files[selectorIndex].c_str() : basepath.c_str();
-    renderer.prewarmFallbackText(
-        SMALL_FONT_ID, [](const void* raw, uint32_t) { return static_cast<const char* const*>(raw)[0]; }, &infoStr,
-        1);
-    const char* infoDisplay = infoStr;
+    const int pathLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
+    const fui::Rect band = screen.takeBottom(static_cast<int16_t>(pathLineHeight + metrics.verticalSpacing));
+    screen.target().fill(fui::Rect{band.x, band.y, band.width, 3}, fui::Paint::solid(fui::Color::Black));
+    const int pathY =
+        band.y + metrics.verticalSpacing / 2 + (band.height - metrics.verticalSpacing / 2 - pathLineHeight) / 2;
+    const int pathMaxWidth = band.width - metrics.contentSidePadding * 2;
+    const bool hasSelection = !files.empty() && nav.selected >= 0 && nav.selected < listCount();
+    const char* pathStr = hasSelection ? files[nav.selected].c_str() : basepath.c_str();
+    const char* pathDisplay = pathStr;
     char leftTruncBuf[256];
-    if (renderer.getTextWidth(SMALL_FONT_ID, infoStr) > infoMaxWidth) {
+    if (renderer.getTextWidth(SMALL_FONT_ID, pathStr) > pathMaxWidth) {
       const char ellipsis[] = "\xe2\x80\xa6";  // UTF-8 ellipsis (…)
       const int ellipsisWidth = renderer.getTextWidth(SMALL_FONT_ID, ellipsis);
-      const int available = infoMaxWidth - ellipsisWidth;
+      const int available = pathMaxWidth - ellipsisWidth;
       // Walk forward from the start until the suffix fits, skipping UTF-8 continuation bytes
-      const char* p = infoStr;
+      const char* p = pathStr;
       while (*p) {
         if (renderer.getTextWidth(SMALL_FONT_ID, p) <= available) break;
         ++p;
         while (*p && (static_cast<unsigned char>(*p) & 0xC0) == 0x80) ++p;
       }
       snprintf(leftTruncBuf, sizeof(leftTruncBuf), "%s%s", ellipsis, p);
-      infoDisplay = leftTruncBuf;
+      pathDisplay = leftTruncBuf;
     }
-    renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, pathY, infoDisplay);
+    renderer.drawText(SMALL_FONT_ID, band.x + metrics.contentSidePadding, pathY, pathDisplay);
   }
 
-  // Help text
-  const auto labels =
-      mappedInput.mapLabels(basepath == "/" ? tr(STR_HOME) : tr(STR_BACK), files.empty() ? "" : tr(STR_OPEN),
-                            files.empty() ? "" : tr(STR_DIR_UP), files.empty() ? "" : tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (files.empty()) {
+    screen.centeredText(mode == Mode::PickFirmware ? tr(STR_NO_BIN_FILES) : tr(STR_NO_FILES_FOUND),
+                        screen.theme().bodyText);
+    return;
+  }
 
-  renderer.displayBuffer();
+  // rowNames/rowExtensions/rowItems are built once per loadFiles() call (see
+  // rebuildRowItems()) and reused here. getFileName()'s folder-bracket format
+  // depends on the theme, so a theme change picked up while this activity was
+  // paused underneath another screen invalidates the cache before it's read.
+  if (rowsUseFileIcons != UITheme::getInstance().getTheme().showsFileIcons()) {
+    rebuildRowItems();
+  }
+
+  fui::ListProps props;
+  props.items = rowItems.data();
+  props.count = static_cast<uint16_t>(rowItems.size());
+  props.action = ACTION_ROW;
+  // Tap opens/navigates; long-press prompts delete (physical buttons stay in loop()).
+  props.inputMask = fui::InputTouch | fui::InputLongPress;
+  props.valueInset = 8;  // air between the extension and the row edge
+  // File names in the small font, wrapping onto a second line inside the same
+  // row height (rowHeight is derived from the small font itself: two of its
+  // lines plus 8, so two small lines always fit), so long names show more
+  // text. maxLines=2 doubles as the caller-owned marker: an all-default
+  // smallText fails textStyleUnset and Screen::list() would substitute
+  // bodyText back (FONT_SLOT_SMALL is 0).
+  fui::TextStyle label = screen.theme().smallText;
+  label.maxLines = 2;
+  props.labelText = label;
+  // The trailing value here is just the short extension: skip the balanced
+  // 60%-band wrap cap and let both name lines run the full width before it.
+  props.balanceWrappedLabelWithValue = false;
+  // Wrapped two-line names shrink how many rows fit a page, so the last row
+  // of a page can end up in leftover space: draw it as a partial preview so
+  // files past the fold are visibly present, not silently absent.
+  props.partialTrailingRow = true;
+  syncListViewport(screen, props);
+  screen.list(props);
+}
+
+void FileBrowserActivity::drawChrome() {
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+
+  std::string folderName =
+      (mode == Mode::PickFirmware)
+          ? std::string(tr(STR_SELECT_FIRMWARE_FILE))
+          : ((basepath == "/") ? std::string(tr(STR_SD_CARD)) : basepath.substr(basepath.rfind('/') + 1));
+  // Header via GUI.drawHeader (already FreeInkUI-themed) for the battery
+  // indicator; the rest of the screen renders through the app.
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, folderName.c_str());
+}
+
+void FileBrowserActivity::drawFooter() {
+  const char* backLabel = (basepath == "/") ? (mode == Mode::PickFirmware ? tr(STR_BACK) : tr(STR_HOME)) : tr(STR_BACK);
+  // In PickFirmware mode, Confirm on a .bin returns the path to the caller (not "open"); show
+  // STR_SELECT instead. Directories in the same picker still descend, so keep STR_OPEN there.
+  const bool selectingFirmwareFile = mode == Mode::PickFirmware && !files.empty() && nav.selected >= 0 &&
+                                     nav.selected < listCount() && files[nav.selected].back() != '/';
+  const char* confirmLabel = files.empty() ? "" : (selectingFirmwareFile ? tr(STR_SELECT) : tr(STR_OPEN));
+  const auto labels = mappedInput.mapLabels(backLabel, confirmLabel, files.empty() ? "" : tr(STR_DIR_UP),
+                                            files.empty() ? "" : tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
 size_t FileBrowserActivity::findEntry(const std::string& name) const {

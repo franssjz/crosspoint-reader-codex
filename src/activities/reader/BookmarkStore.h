@@ -49,7 +49,7 @@ class BookmarkStore {
       }
     }
 
-    FsFile file;
+    HalFile file;
     bool loadedLegacyPath = false;
     if (!Storage.openFileForRead("BKM", getFilePath(), file)) {
       if (storagePath == legacyPath || legacyPath.empty() || !Storage.openFileForRead("BKM", legacyPath, file)) {
@@ -128,8 +128,8 @@ class BookmarkStore {
         if (version >= 5) {
           uint8_t flags = 0;
           if (file.read(&flags, sizeof(flags)) != sizeof(flags) ||
-              file.read(reinterpret_cast<uint8_t*>(&bookmark.visibleTextOffset),
-                        sizeof(bookmark.visibleTextOffset)) != sizeof(bookmark.visibleTextOffset)) {
+              file.read(reinterpret_cast<uint8_t*>(&bookmark.visibleTextOffset), sizeof(bookmark.visibleTextOffset)) !=
+                  sizeof(bookmark.visibleTextOffset)) {
             bookmarks.clear();
             file.close();
             return;
@@ -176,7 +176,7 @@ class BookmarkStore {
       Storage.remove(tempPath.c_str());
     }
 
-    FsFile file;
+    HalFile file;
     if (!Storage.openFileForWrite("BKM", tempPath, file)) {
       LOG_ERR("BKM", "Failed to save bookmarks");
       return;

@@ -2,8 +2,8 @@
 
 #include <I18n.h>
 
-#include "../../components/UITheme.h"
 #include "HalDisplay.h"
+#include "components/UITheme.h"
 
 ConfirmationActivity::ConfirmationActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                            const std::string& heading, const std::string& body)
@@ -49,7 +49,23 @@ void ConfirmationActivity::onEnter() {
   totalHeight += static_cast<int>(bodyLines.size()) * lineHeight;
   if (!safeHeading.empty() && !bodyLines.empty()) totalHeight += spacing;
 
-  startY = (renderer.getScreenHeight() - totalHeight) / 2;
+  // Text sits in the upper part of the screen so the confirmation popup
+  // (centered) doesn't cover it. Multi-line bodies are pulled further up so the
+  // whole block still ends above the popup.
+  const int screenHeight = renderer.getScreenHeight();
+  startY = screenHeight / 6;
+  if (startY + totalHeight > screenHeight / 2 - spacing) {
+    startY = screenHeight / 2 - spacing - totalHeight;
+  }
+  if (startY < margin) startY = margin;
+
+  const char* options[] = {I18N.get(StrId::STR_CANCEL), I18N.get(StrId::STR_CONFIRM)};
+  confirmPopup.show(safeHeading.c_str(), options, 2, 0, [this](int idx) {
+    ActivityResult res;
+    res.isCancelled = (idx != 1);
+    setResult(std::move(res));
+    finish();
+  });
 
   requestUpdate(true);
 }
@@ -71,27 +87,17 @@ void ConfirmationActivity::render(RenderLock&& lock) {
     currentY += lineHeight;
   }
 
-  // Draw UI Elements
-  const auto labels = mappedInput.mapLabels("", "", I18N.get(StrId::STR_CANCEL), I18N.get(StrId::STR_CONFIRM));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (confirmPopup.processRender(renderer, mappedInput)) return;
 
   renderer.displayBuffer(HalDisplay::RefreshMode::FAST_REFRESH);
 }
 
 void ConfirmationActivity::loop() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-    ActivityResult res;
-    res.isCancelled = false;
-    setResult(std::move(res));
-    finish();
-    return;
-  }
+  if (confirmPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-    ActivityResult res;
-    res.isCancelled = true;
-    setResult(std::move(res));
-    finish();
-    return;
-  }
+  // Popup dismissed without a selection (Back button or tap outside): cancel.
+  ActivityResult res;
+  res.isCancelled = true;
+  setResult(std::move(res));
+  finish();
 }

@@ -41,7 +41,7 @@ bool resolveRootDirectoryIgnoreCase(const char* expectedPath, char* resolvedPath
   // Always enumerate the root. FAT lookups are case-insensitive, so opening
   // expectedPath directly cannot tell us the spelling stored in the directory
   // entry (for example, /fonts may successfully open /FoNtS).
-  FsFile root = Storage.open("/");
+  HalFile root = Storage.open("/");
   if (!root || !root.isDirectory()) {
     if (root) root.close();
     return false;
@@ -49,7 +49,7 @@ bool resolveRootDirectoryIgnoreCase(const char* expectedPath, char* resolvedPath
 
   char name[256];
   const char* expectedName = expectedPath + 1;
-  for (FsFile entry = root.openNextFile(); entry; entry = root.openNextFile()) {
+  for (HalFile entry = root.openNextFile(); entry; entry = root.openNextFile()) {
     const bool isDirectory = entry.isDirectory();
     entry.getName(name, sizeof(name));
     entry.close();
@@ -84,13 +84,13 @@ std::string decodeUriEscapes(const std::string& path) {
 
 std::string normalisePath(const std::string& path) {
   std::vector<std::string_view> components;
-  components.reserve(8);
+  components.reserve(8);  // Eight nested folders is more than we might expect
 
   size_t start = 0;
   for (size_t i = 0; i <= path.length(); ++i) {
     if (i == path.length() || path[i] == '/') {
       if (i > start) {
-        const std::string_view component(path.data() + start, i - start);
+        std::string_view component(path.data() + start, i - start);
         if (component == "..") {
           if (!components.empty()) {
             components.pop_back();
@@ -107,13 +107,13 @@ std::string normalisePath(const std::string& path) {
     return "";
   }
 
-  size_t totalLen = 0;
-  for (const auto& component : components) {
-    totalLen += component.length() + 1;
+  size_t total_len = 0;
+  for (const auto& c : components) {
+    total_len += c.length() + 1;
   }
 
   std::string result;
-  result.reserve(totalLen - 1);
+  result.reserve(total_len - 1);
 
   for (size_t i = 0; i < components.size(); ++i) {
     if (i > 0) {
@@ -126,42 +126,49 @@ std::string normalisePath(const std::string& path) {
 }
 
 bool naturalLess(const std::string& str1, const std::string& str2) {
+  // Naive natural sort: numeric-aware, case-insensitive
   const char* s1 = str1.c_str();
   const char* s2 = str2.c_str();
+
+  // ctype functions require unsigned char values: passing a negative char (UTF-8
+  // bytes above 0x7f with signed char) is undefined behavior
   const auto isDigit = [](const char c) { return isdigit(static_cast<unsigned char>(c)) != 0; };
 
+  // Iterate while both strings have characters
   while (*s1 && *s2) {
+    // Check if both are at the start of a number
     if (isDigit(*s1) && isDigit(*s2)) {
-        // Skip leading zeros and track them
-        while (*s1 == '0') s1++;
-        while (*s2 == '0') s2++;
+      // Skip leading zeros and track them
+      while (*s1 == '0') s1++;
+      while (*s2 == '0') s2++;
 
-        // Count digits to compare lengths first
-        int len1 = 0, len2 = 0;
-        while (isDigit(s1[len1])) len1++;
-        while (isDigit(s2[len2])) len2++;
+      // Count digits to compare lengths first
+      int len1 = 0, len2 = 0;
+      while (isDigit(s1[len1])) len1++;
+      while (isDigit(s2[len2])) len2++;
 
-        // Different length so return smaller integer value
-        if (len1 != len2) return len1 < len2;
+      // Different length so return smaller integer value
+      if (len1 != len2) return len1 < len2;
 
-        // Same length so compare digit by digit
-        for (int i = 0; i < len1; i++) {
-          if (s1[i] != s2[i]) return s1[i] < s2[i];
-        }
-
-        // Numbers equal so advance pointers
-        s1 += len1;
-        s2 += len2;
-      } else {
-        // Regular case-insensitive character comparison
-        const int c1 = tolower(static_cast<unsigned char>(*s1));
-        const int c2 = tolower(static_cast<unsigned char>(*s2));
-        if (c1 != c2) return c1 < c2;
-        s1++;
-        s2++;
+      // Same length so compare digit by digit
+      for (int i = 0; i < len1; i++) {
+        if (s1[i] != s2[i]) return s1[i] < s2[i];
       }
-    }
 
+      // Numbers equal so advance pointers
+      s1 += len1;
+      s2 += len2;
+    } else {
+      // Regular case-insensitive character comparison
+      const int c1 = tolower(static_cast<unsigned char>(*s1));
+      const int c2 = tolower(static_cast<unsigned char>(*s2));
+      if (c1 != c2) return c1 < c2;
+      s1++;
+      s2++;
+    }
+  }
+
+  // One string is prefix of other
   return *s1 == '\0' && *s2 != '\0';
 }
 
@@ -171,6 +178,7 @@ void sortFileList(std::vector<std::string>& strs) {
     bool isDir1 = str1.back() == '/';
     bool isDir2 = str2.back() == '/';
     if (isDir1 != isDir2) return isDir1;
+
     return naturalLess(str1, str2);
   });
 }

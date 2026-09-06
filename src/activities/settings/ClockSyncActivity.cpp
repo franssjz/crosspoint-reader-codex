@@ -16,18 +16,19 @@
 #include "util/TimeUtils.h"
 
 namespace {
-  void wifiOff() {
-    TimeUtils::stopNtp();
-    WiFi.disconnect(false);
-    delay(100);
-    WiFi.mode(WIFI_OFF);
-    delay(100);
-  }
+void wifiOff() {
+  TimeUtils::stopNtp();
+  WiFi.disconnect(false);
+  delay(100);
+  WiFi.mode(WIFI_OFF);
+  delay(100);
 }
+}  // namespace
 
 void ClockSyncActivity::onEnter() {
   Activity::onEnter();
   TimeUtils::configureTimezone();
+  state = SYNCING;
   syncedTime[0] = '\0';
   wifiConnectedOnEnter = WiFi.status() == WL_CONNECTED;
   connectedInActivity = false;
@@ -37,6 +38,7 @@ void ClockSyncActivity::onEnter() {
     return;
   }
 
+  LOG_INF("CLK", "Manual sync requested without WiFi, launching WiFi selection");
   WiFi.mode(WIFI_STA);
   openWifiSelection();
 }
@@ -44,6 +46,8 @@ void ClockSyncActivity::onEnter() {
 void ClockSyncActivity::onExit() {
   Activity::onExit();
 
+  // Only tear WiFi down if this activity brought it up; a connection that was
+  // already live on entry belongs to whoever opened it.
   if (!wifiConnectedOnEnter && connectedInActivity) {
     wifiOff();
   }
@@ -56,6 +60,7 @@ void ClockSyncActivity::openWifiSelection() {
 
 void ClockSyncActivity::onWifiSelectionComplete(const bool connected) {
   if (!connected || WiFi.status() != WL_CONNECTED) {
+    LOG_INF("CLK", "WiFi selection cancelled or not connected before manual clock sync");
     state = NO_WIFI;
     requestUpdate();
     return;
@@ -73,6 +78,13 @@ void ClockSyncActivity::beginSync() {
 }
 
 void ClockSyncActivity::runSync() {
+  if (WiFi.status() != WL_CONNECTED) {
+    LOG_INF("CLK", "Manual sync requested but WiFi is not connected");
+    state = NO_WIFI;
+    requestUpdate();
+    return;
+  }
+
   const bool ok = halClock.syncFromNTP();
   if (!ok) {
     state = FAILED;
@@ -84,6 +96,8 @@ void ClockSyncActivity::runSync() {
   SETTINGS.clockHasBeenSynced = 1;
   SETTINGS.saveToFile();
 
+  // Push the freshly written RTC value into the system clock so the status bar
+  // and reading stats pick it up immediately.
   TimeUtils::applySystemClockFromRtc(true);
 
   // Read the freshly synced time back for the user-facing confirmation.
@@ -104,8 +118,10 @@ void ClockSyncActivity::loop() {
     return;
   }
 
+  int x = 0;
+  int y = 0;
   if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
-      mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      mappedInput.wasPressed(MappedInputManager::Button::Confirm) || mappedInput.wasScreenTapped(x, y)) {
     finish();
   }
 }
@@ -128,7 +144,9 @@ void ClockSyncActivity::render(RenderLock&&) {
     case SUCCESS: {
       renderer.drawCenteredText(UI_12_FONT_ID, midY - 20, tr(STR_CLOCK_SYNC_OK), true, EpdFontFamily::BOLD);
       if (syncedTime[0] != '\0') {
-        // Leave room for the longest translated label plus the formatted time.
+        // Sized for the label in any language: STR_CURRENT_TIME is 26 bytes in
+        // Russian (UTF-8 Cyrillic is 2 bytes per letter) versus 13 in English,
+        // plus a separator and up to "08:56 PM".
         char line[64];
         snprintf(line, sizeof(line), "%s %s", tr(STR_CURRENT_TIME), syncedTime);
         renderer.drawCenteredText(UI_10_FONT_ID, midY + 10, line);

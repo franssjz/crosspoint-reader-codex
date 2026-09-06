@@ -3,28 +3,26 @@
 #include <Arduino.h>
 #include <Logging.h>
 
-#include "ImageDimensionLimits.h"
-
 bool ImageToFramebufferDecoder::validateAndStoreDimensions(const int64_t width, const int64_t height,
                                                            ImageDimensions& out, const char* format) {
-  using ImageDimensionLimits::ValidationResult;
-  switch (ImageDimensionLimits::validate(width, height)) {
-    case ValidationResult::NonPositive:
-      LOG_ERR("IMG", "Invalid %s dimensions: %lldx%lld", format, static_cast<long long>(width),
-              static_cast<long long>(height));
-      return false;
-    case ValidationResult::DimensionTooLarge:
-      LOG_ERR("IMG", "%s dimensions exceed supported limit: %lldx%lld (max %lld per dimension)", format,
-              static_cast<long long>(width), static_cast<long long>(height),
-              static_cast<long long>(ImageDimensionLimits::MAX_SOURCE_DIMENSION));
-      return false;
-    case ValidationResult::PixelCountTooLarge:
-      LOG_ERR("IMG", "%s too large (%lldx%lld = %lld pixels), max supported: %lld pixels", format,
-              static_cast<long long>(width), static_cast<long long>(height), static_cast<long long>(width * height),
-              static_cast<long long>(ImageDimensionLimits::MAX_SOURCE_PIXELS));
-      return false;
-    case ValidationResult::Valid:
-      break;
+  if (width <= 0 || height <= 0) {
+    LOG_ERR("IMG", "Invalid %s dimensions: %lldx%lld", format, static_cast<long long>(width),
+            static_cast<long long>(height));
+    return false;
+  }
+  if (width > MAX_SOURCE_DIMENSION || height > MAX_SOURCE_DIMENSION) {
+    LOG_ERR("IMG", "%s dimensions exceed supported limit: %lldx%lld (max %lld per dimension)", format,
+            static_cast<long long>(width), static_cast<long long>(height),
+            static_cast<long long>(MAX_SOURCE_DIMENSION));
+    return false;
+  }
+
+  const int64_t pixels = width * height;
+  if (pixels > MAX_SOURCE_PIXELS) {
+    LOG_ERR("IMG", "%s too large (%lldx%lld = %lld pixels), max supported: %lld pixels", format,
+            static_cast<long long>(width), static_cast<long long>(height), static_cast<long long>(pixels),
+            static_cast<long long>(MAX_SOURCE_PIXELS));
+    return false;
   }
 
   out.width = static_cast<int16_t>(width);

@@ -5,6 +5,7 @@
 #include "HyphenationCommon.h"
 #include "generated/hyph-en.trie.h"
 #include "generated/hyph-es.trie.h"
+#include "generated/hyph-fi.trie.h"
 #include "generated/hyph-fr.trie.h"
 #include "generated/hyph-it.trie.h"
 #include "generated/hyph-pl.trie.h"
@@ -28,24 +29,21 @@ LanguageHyphenator germanHyphenator(de_patterns, isLatinLetter, toLowerLatin);
 LanguageHyphenator russianHyphenator(ru_patterns, isCyrillicLetter, toLowerCyrillic);
 LanguageHyphenator spanishHyphenator(es_patterns, isLatinLetter, toLowerLatin);
 LanguageHyphenator italianHyphenator(it_patterns, isLatinLetter, toLowerLatin);
-LanguageHyphenator polishHyphenator(pl_patterns, isLatinLetter, toLowerLatin);
 LanguageHyphenator swedishHyphenator(sv_patterns, isLatinLetter, toLowerLatin);
 LanguageHyphenator turkishHyphenator(tr_patterns, isLatinLetter, toLowerTurkish);
 LanguageHyphenator ukrainianHyphenator(uk_patterns, isCyrillicLetter, toLowerCyrillic);
+LanguageHyphenator polishHyphenator(pl_patterns, isLatinLetter, toLowerLatin);
+LanguageHyphenator finnishHyphenator(fi_patterns, isLatinLetter, toLowerLatin);
 
 static const LanguageEntry kEntries[] = {
-    {"english", "en", &englishHyphenator},
-    {"french", "fr", &frenchHyphenator},
+    {"english", "en", &englishHyphenator},     {"french", "fr", &frenchHyphenator},
 #if CPR_ENABLE_GERMAN_HYPHENATION
     {"german", "de", &germanHyphenator},
 #endif
-    {"russian", "ru", &russianHyphenator},
-    {"spanish", "es", &spanishHyphenator},
-    {"italian", "it", &italianHyphenator},
-    {"polish", "pl", &polishHyphenator},
-    {"swedish", "sv", &swedishHyphenator},
-    {"turkish", "tr", &turkishHyphenator},
-    {"ukrainian", "uk", &ukrainianHyphenator},
+    {"russian", "ru", &russianHyphenator},     {"spanish", "es", &spanishHyphenator},
+    {"italian", "it", &italianHyphenator},     {"polish", "pl", &polishHyphenator},
+    {"swedish", "sv", &swedishHyphenator},     {"turkish", "tr", &turkishHyphenator},
+    {"ukrainian", "uk", &ukrainianHyphenator}, {"finnish", "fi", &finnishHyphenator},
 };
 
 }  // namespace
@@ -56,6 +54,4 @@ const LanguageHyphenator* getLanguageHyphenatorForPrimaryTag(const std::string& 
   return (it != std::end(kEntries)) ? it->hyphenator : nullptr;
 }
 
-LanguageEntryView getLanguageEntries() {
-  return LanguageEntryView{kEntries, sizeof(kEntries) / sizeof(kEntries[0])};
-}
+LanguageEntryView getLanguageEntries() { return LanguageEntryView{kEntries, sizeof(kEntries) / sizeof(kEntries[0])}; }

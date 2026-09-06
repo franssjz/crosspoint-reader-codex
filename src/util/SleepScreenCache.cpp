@@ -9,7 +9,7 @@
 
 namespace {
 uint32_t getSourceFileSize(const std::string& sourcePath) {
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("SLC", sourcePath, file)) {
     return 0;
   }
@@ -49,7 +49,7 @@ bool SleepScreenCache::load(GfxRenderer& renderer, const std::string& sourcePath
   }
 
   const auto path = getCachePath(sourcePath, sourceSize);
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("SLC", path, file)) {
     return false;
   }
@@ -84,7 +84,7 @@ void SleepScreenCache::save(const GfxRenderer& renderer, const std::string& sour
   }
 
   const auto path = getCachePath(sourcePath, sourceSize);
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForWrite("SLC", path, file)) {
     LOG_ERR("SLC", "Could not open cache file %s", path.c_str());
     return;

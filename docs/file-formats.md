@@ -1,21 +1,25 @@
 # File Formats
 
+These formats describe the SD-card cache files under `/.crosspoint/epub_<hash>/`.
+All POD fields are written in the ESP32 little-endian representation used by
+`Serialization.h`; strings are length-prefixed UTF-8.
+
 ## `book.bin`
 
-### Version 6
+### Version 10
 
-ImHex Pattern:
+`book.bin` stores EPUB metadata plus lookup tables for spine and TOC entries.
+The current firmware writes this version from `BookMetadataCache`.
+
+ImHex pattern:
 
 ```c++
 import std.mem;
 import std.string;
 import std.core;
 
-// === Configuration ===
-#define EXPECTED_VERSION 6
+#define EXPECTED_VERSION 10
 #define MAX_STRING_LENGTH 65535
-
-// === String Structure ===
 
 struct String {
     u32 length [[hidden, comment("String byte length")]];
@@ -28,8 +32,6 @@ struct String {
 fn format_string(String s) {
     return s.data;
 };
-
-// === Metadata Structure ===
 
 struct Metadata {
     String title [[comment("Book title")]];
@@ -37,67 +39,50 @@ struct Metadata {
     String language [[comment("Book language code")]];
     String coverItemHref [[comment("Path to cover image")]];
     String textReferenceHref [[comment("Path to guided first text reference")]];
-} [[comment("Book metadata information")]];
-
-// === Spine Entry Structure ===
+};
 
 struct SpineEntry {
     String href [[comment("Resource path")]];
-    u32 cumulativeSize [[comment("Cumulative size in bytes"), color("FF6B6B")]];
-    s16 tocIndex [[comment("Index into TOC (-1 if none)"), color("4ECDC4")]];
-} [[comment("Spine entry defining reading order")]];
-
-// === TOC Entry Structure ===
+    u32 cumulativeSize [[comment("Cumulative uncompressed spine size through this entry")]];
+    s16 tocIndex [[comment("Index into TOC, or inherited/previous TOC index when no direct entry exists")]];
+};
 
 struct TocEntry {
     String title [[comment("Chapter/section title")]];
     String href [[comment("Resource path")]];
     String anchor [[comment("Fragment identifier")]];
-    u8 level [[comment("Nesting level (0-255)"), color("95E1D3")]];
-    s16 spineIndex [[comment("Index into spine (-1 if none)"), color("F38181")]];
-} [[comment("Table of contents entry")]];
-
-// === Book Bin Structure ===
+    u8 level [[comment("Nesting level")]];
+    s16 spineIndex [[comment("Index into spine (-1 if none)")]];
+};
 
 struct BookBin {
-    // Header
-    u8 version [[comment("Format version"), color("FFD93D")]];
-
-    // Version validation
+    u8 version;
     if (version != EXPECTED_VERSION) {
         std::error(std::format("Unsupported version: {} (expected {})", version, EXPECTED_VERSION));
     }
 
-    u32 lutOffset [[comment("Offset to lookup tables"), color("6BCB77")]];
-    u16 spineCount [[comment("Number of spine entries"), color("4D96FF")]];
-    u16 tocCount [[comment("Number of TOC entries"), color("FF6B9D")]];
+    u32 lutOffset [[comment("Offset to lookup tables")]];
+    u16 spineCount;
+    u16 tocCount;
 
-    // Metadata section
-    Metadata metadata [[comment("Book metadata")]];
+    Metadata metadata;
 
-    // Validate LUT offset alignment
     u32 currentOffset = $;
     if (currentOffset != lutOffset) {
         std::warning(std::format("LUT offset mismatch: expected 0x{:X}, got 0x{:X}", lutOffset, currentOffset));
     }
 
-    // Lookup Tables
-    u32 spineLut[spineCount] [[comment("Spine entry offsets"), color("4D96FF")]];
-    u32 tocLut[tocCount] [[comment("TOC entry offsets"), color("FF6B9D")]];
+    u32 spineLut[spineCount] [[comment("Spine entry offsets")]];
+    u32 tocLut[tocCount] [[comment("TOC entry offsets")]];
 
-    // Data Entries
-    SpineEntry spines[spineCount] [[comment("Spine entries (reading order)")]];
-    TocEntry toc[tocCount] [[comment("Table of contents entries")]];
+    SpineEntry spines[spineCount];
+    TocEntry toc[tocCount];
 };
-
-// === File Parsing ===
 
 BookBin book @ 0x00;
 
-// Validate we've consumed the entire file
 u32 fileSize = std::mem::size();
 u32 parsedSize = $;
-
 if (parsedSize != fileSize) {
     std::warning(std::format("Unparsed data detected: {} bytes remaining at offset 0x{:X}", fileSize - parsedSize, parsedSize));
 }
@@ -105,20 +90,95 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
-### Version 27
+### Version 45
 
-ImHex Pattern:
+Version 45 keeps the version 44 serialized layout unchanged. It was bumped
+because internal EPUB links now preserve CSS superscript and subscript styles,
+changing their cached word-style flags and page layout.
+
+### Version 44
+
+Each file in `sections/*.bin` stores one laid-out spine section. The header is
+also the cache-busting key: if any layout-affecting setting differs from the
+current reader settings, the section is discarded and rebuilt.
+
+Version 44 appends the internal-link rectangles produced during text layout to
+each serialized page. The reader uses these rectangles for touch navigation;
+older caches are rebuilt because they contain no link geometry.
+
+Version 43 keeps the version 42 serialized layout unchanged. It was bumped
+because paragraph base direction now excludes direction changes from inline
+elements.
+
+Version 42 keeps the version 41 serialized layout unchanged. It was bumped
+because closing a block now strips inherited vertical margins and padding.
+
+Version 41 keeps the version 40 serialized layout unchanged. It was bumped
+because simple HTML table rows are now laid out as positioned columns rather
+than flattened paragraphs with synthetic row/cell labels.
+
+Version 40 keeps the version 39 serialized layout unchanged. It was bumped
+because ruby groups now remain intact when large text blocks are soft-flushed.
+
+Version 39 keeps the version 38 serialized layout unchanged. It was bumped
+because image top margins are now clamped to keep full-height images within the
+page viewport.
+
+Version 38 keeps the version 37 serialized layout unchanged. It was bumped
+because Focus Reading now permits line breaks at visible hyphens and dashes
+and hyphenates focus-split words as a whole, changing cached page layout.
+
+Version 37 increases the fixed-size footnote href field from 96 to 256 bytes.
+This changes each serialized footnote record from 128 to 288 bytes, so older
+section caches must be discarded and rebuilt.
+
+Version 36 keeps the version 35 serialized layout unchanged. It was bumped
+because ruby and justified text positioning and CJK line breaking now use
+corrected word measurements, so version 35 cached page layouts no longer match.
+
+Version 35 adds a header offset and a `uint32_t` entry per page for the
+visible-text offset LUT. The other section LUTs remain unchanged.
+
+Version 34 is binary-identical to version 33. The version was bumped because
+word-gap suppression was narrowed to tokens glued together in the source: v33
+dropped the gap between any two words meeting at a CJK break opportunity, which
+collapsed the spaces between Hangul words, so v33 word positions no longer match
+what the layout engine now produces.
+
+Version 30 is binary-identical to version 29. The version was bumped because
+Arabic contextual shaping changed text measurement (`getTextAdvanceX` now
+measures the shaped visual text), so word positions cached by v29 no longer
+match what `drawText` renders.
+
+Version 28 introduced serialized word style bits for underline, strikethrough,
+superscript, and subscript. The format also includes:
+
+- cache-busting fields for paragraph alignment, hyphenation, embedded CSS,
+  image rendering mode, and Focus Reading
+- page offset LUT
+- per-page visible-text offset LUT (zero-based Unicode codepoints in `<body>`)
+- anchor-to-page map for fragment and footnote navigation
+- paragraph and list-item LUTs retained for navigation and legacy sync fallback
+- optional per-word Focus Reading split metadata
+- per-page footnote entries
+- serialized word style bits for underline, strikethrough, superscript, and
+  subscript
+- flat TextBlock word storage (v29): per-word arrays plus one shared
+  NUL-terminated text blob, replacing v28's length-prefixed word strings. The
+  on-disk order mirrors the in-RAM arena so the firmware reads a whole block
+  payload with a single allocation and a single SD read
+
+ImHex pattern:
 
 ```c++
 import std.mem;
 import std.string;
 import std.core;
 
-// === Configuration ===
-#define EXPECTED_VERSION 27
+#define EXPECTED_VERSION 41
 #define MAX_STRING_LENGTH 65535
-
-// === String Structure ===
+#define FOOTNOTE_NUMBER_LEN 32
+#define FOOTNOTE_HREF_LEN 256
 
 struct String {
     u32 length [[hidden, comment("String byte length")]];
@@ -132,12 +192,10 @@ fn format_string(String s) {
     return s.data;
 };
 
-// === Page Structure ===
-
 enum PageElementTag : u8 {
-    PageLine = 1,
-    PageImage = 2,
-    PageHorizontalRule = 3
+    TAG_PageLine = 1,
+    TAG_PageImage = 2,
+    TAG_PageHorizontalRule = 3
 };
 
 enum WordStyle : u8 {
@@ -151,21 +209,76 @@ enum WordStyle : u8 {
     SUB = 32
 };
 
-enum BlockStyle : u8 {
+enum TextAlign : u8 {
     JUSTIFIED = 0,
     LEFT_ALIGN = 1,
     CENTER_ALIGN = 2,
     RIGHT_ALIGN = 3,
+    NONE = 4
+};
+
+struct BlockStyle {
+    TextAlign alignment;
+    bool textAlignDefined;
+    s16 marginTop;
+    s16 marginBottom;
+    s16 marginLeft;
+    s16 marginRight;
+    s16 paddingTop;
+    s16 paddingBottom;
+    s16 paddingLeft;
+    s16 paddingRight;
+    s16 textIndent;
+    bool textIndentDefined;
+    bool isRtl;
+    bool directionDefined;
+};
+
+struct TextBlock {
+    u16 wordCount;
+    u8 hasFocus;
+    u16 textBytes [[comment("Total size of text[], including one NUL per word")]];
+
+    if (wordCount > 0) {
+        u16 textOff[wordCount] [[comment("Byte offset of word i's text within text[]")]];
+        s16 wordXPos[wordCount];
+        if (hasFocus != 0) {
+            u16 wordFocusSuffixX[wordCount] [[comment("Suffix x offset from word start")]];
+        }
+        WordStyle wordStyle[wordCount];
+        if (hasFocus != 0) {
+            u8 wordFocusBoundary[wordCount] [[comment("UTF-8 byte boundary between bold prefix and suffix")]];
+        }
+        char text[textBytes] [[comment("All words back to back, each NUL-terminated")]];
+    }
+
+    BlockStyle blockStyle;
+};
+
+struct ImageBlock {
+    String imagePath;
+    String srcPath;
+    s16 width;
+    s16 height;
 };
 
 struct PageLine {
-  s16 xPos;
-  s16 yPos;
-  u16 wordCount;
-  String words[wordCount];
-  u16 wordXPos[wordCount];
-  WordStyle wordStyle[wordCount];
-  BlockStyle blockStyle;
+    s16 xPos;
+    s16 yPos;
+    TextBlock block;
+};
+
+struct PageImage {
+    s16 xPos;
+    s16 yPos;
+    ImageBlock image;
+};
+
+struct PageHorizontalRule {
+    s16 xPos;
+    s16 yPos;
+    u16 width;
+    u8 thickness;
 };
 
 struct PageImage {
@@ -184,21 +297,29 @@ struct PageHorizontalRule {
 };
 
 struct PageElement {
-    u8 pageElementType;
-    if (pageElementType == 1) {
+    PageElementTag pageElementType;
+    if (pageElementType == TAG_PageLine) {
         PageLine pageLine [[inline]];
-    } else if (pageElementType == 2) {
+    } else if (pageElementType == TAG_PageImage) {
         PageImage pageImage [[inline]];
-    } else if (pageElementType == 3) {
+    } else if (pageElementType == TAG_PageHorizontalRule) {
         PageHorizontalRule horizontalRule [[inline]];
     } else {
         std::error(std::format("Unknown page element type: {}", pageElementType));
     }
 };
 
+struct FootnoteEntry {
+    char number[FOOTNOTE_NUMBER_LEN];
+    char href[FOOTNOTE_HREF_LEN];
+};
+
 struct Page {
     u16 elementCount;
     PageElement elements[elementCount] [[inline]];
+
+    u16 footnoteCount;
+    FootnoteEntry footnotes[footnoteCount];
 };
 
 struct AnchorEntry {
@@ -206,67 +327,70 @@ struct AnchorEntry {
     u16 page;
 };
 
-struct ParagraphLutEntry {
-    u32 xhtmlByteOffset;
-    u16 paragraphIndex;
-    u16 listItemIndex;
+struct AnchorMap {
+    u16 count;
+    AnchorEntry entries[count];
 };
 
-// === Section Bin Structure ===
+struct ParagraphLut {
+    u16 count;
+    u16 paragraphIndex[count];
+};
 
 struct SectionBin {
-    // Header
-    u8 version [[comment("Format version"), color("FFD93D")]];
-
-    // Version validation
+    u8 version;
     if (version != EXPECTED_VERSION) {
         std::error(std::format("Unsupported version: {} (expected {})", version, EXPECTED_VERSION));
     }
 
-    // Cache busting parameters
     s32 fontId;
     float lineCompression;
     bool extraParagraphSpacing;
-    bool forceParagraphIndents;
     u8 paragraphAlignment;
     u16 viewportWidth;
     u16 viewportHeight;
     bool hyphenationEnabled;
     bool embeddedStyle;
     u8 imageRendering;
+    bool focusReadingEnabled;
+
     u16 pageCount;
-    u32 lutOffset;
+    u32 pageLutOffset;
     u32 anchorMapOffset;
     u32 paragraphLutOffset;
+    u32 listItemLutOffset;
+    u32 visibleTextLutOffset;
 
-    Page page[pageCount];
+    Page pages[pageCount];
 
-    // Validate LUT offset alignment
     u32 currentOffset = $;
-    if (currentOffset != lutOffset) {
-        std::warning(std::format("LUT offset mismatch: expected 0x{:X}, got 0x{:X}", lutOffset, currentOffset));
+    if (currentOffset != pageLutOffset) {
+        std::warning(std::format("Page LUT offset mismatch: expected 0x{:X}, got 0x{:X}", pageLutOffset, currentOffset));
     }
 
-    // Lookup Tables
-    u32 lut[pageCount];
+    u32 pageLut[pageCount] [[comment("Page data offsets")]];
 
-    std::mem::set_cursor(anchorMapOffset);
-    u16 anchorCount;
-    AnchorEntry anchors[anchorCount];
+    if (anchorMapOffset != 0) {
+        AnchorMap anchorMap @ anchorMapOffset;
+    }
 
-    std::mem::set_cursor(paragraphLutOffset);
-    u16 paragraphLutCount;
-    ParagraphLutEntry paragraphLut[paragraphLutCount];
+    if (paragraphLutOffset != 0) {
+        ParagraphLut paragraphLut @ paragraphLutOffset;
+    }
+
+    if (listItemLutOffset != 0 && paragraphLutOffset != 0) {
+        u16 listItemIndex[paragraphLut.count] @ listItemLutOffset;
+    }
+
+    if (visibleTextLutOffset != 0) {
+	u32 visibleTextOffset[pageCount] @ visibleTextLutOffset;
+    }
 };
 
-// === File Parsing ===
+SectionBin section @ 0x00;
 
-SectionBin book @ 0x00;
-
-// Validate we've consumed the entire file
 u32 fileSize = std::mem::size();
 u32 parsedSize = $;
-
 if (parsedSize != fileSize) {
     std::warning(std::format("Unparsed data detected: {} bytes remaining at offset 0x{:X}", fileSize - parsedSize, parsedSize));
 }

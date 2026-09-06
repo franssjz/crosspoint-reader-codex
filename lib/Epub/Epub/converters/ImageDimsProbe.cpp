@@ -1,4 +1,3 @@
-
 #include "ImageDimsProbe.h"
 
 #include <cstdint>

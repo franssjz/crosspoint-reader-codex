@@ -3,11 +3,12 @@
 #include <string>
 #include <vector>
 
-#include "../Activity.h"
 #include "../reader/BookmarkStore.h"
-#include "util/ButtonNavigator.h"
+#include "activities/UiListActivity.h"
 
-class BookmarksAppActivity final : public Activity {
+// Books with saved highlights/bookmarks. Activate opens the book's bookmark
+// list; a Confirm hold or touch long-press clears all of that book's marks.
+class BookmarksAppActivity final : public UiListActivity {
   struct BookEntry {
     std::string bookId;
     std::string path;
@@ -16,20 +17,29 @@ class BookmarksAppActivity final : public Activity {
     std::vector<BookmarkStore::Bookmark> bookmarks;
   };
 
-  ButtonNavigator buttonNavigator;
-  int selectedIndex = 0;
   std::vector<BookEntry> entries;
+  // Row caches derived from entries (bookmark counts in the value slot).
+  std::vector<std::string> rowCounts;
+  std::vector<freeink::ui::ListItem> rowItems;
 
   void refreshEntries();
-  void openSelectedBook();
+  void rebuildRowItems();
+  void openBook(int index);
   bool clearBookmarksForBook(const std::string& bookId) const;
-  void confirmDeleteSelectedBook();
+  void confirmDeleteBook(int index);
+
+  int listCount() const override { return static_cast<int>(entries.size()); }
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  void onRowLongPress(int index) override;
+  bool handleButtons() override;
+  void drawChrome() override;
+  void drawFooter() override;
 
  public:
   explicit BookmarksAppActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("HighlightsApp", renderer, mappedInput) {}
+      : UiListActivity("HighlightsApp", renderer, mappedInput, /*wantsTouchLongPress=*/true) {}
 
   void onEnter() override;
-  void loop() override;
-  void render(RenderLock&&) override;
+  void onExit() override;
 };

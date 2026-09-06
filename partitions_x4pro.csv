@@ -1,0 +1,10 @@
+# Xteink X4 Pro (ESP32-S3, 16 MB) — mirrors the factory partition table so the
+# build-time size check, `pio run -e x4pro -t upload`, the browser flasher and
+# on-device OTA all agree on the same 0x7E0000-byte app slots.
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x7E0000,
+app1,     app,  ota_1,   0x7F0000, 0x7E0000,
+spiffs,   data, spiffs,  0xFD0000, 0x14000,
+coredump, data, coredump,0xFE4000, 0x1C000,

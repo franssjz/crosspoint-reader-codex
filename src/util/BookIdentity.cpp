@@ -36,17 +36,14 @@ bool isLowerHex32(const std::string& value) {
     return false;
   }
 
-  return std::all_of(value.begin(), value.end(), [](const char ch) {
-    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
-  });
+  return std::all_of(value.begin(), value.end(),
+                     [](const char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); });
 }
 
-std::string makeSafeDirectoryId(const std::string& bookId) {
-  return isLowerHex32(bookId) ? bookId : md5Hex(bookId);
-}
+std::string makeSafeDirectoryId(const std::string& bookId) { return isLowerHex32(bookId) ? bookId : md5Hex(bookId); }
 
 size_t getFileSize(const std::string& path) {
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("BID", path, file)) {
     return 0;
   }

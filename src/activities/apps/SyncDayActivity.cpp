@@ -6,21 +6,29 @@
 
 #include <algorithm>
 #include <ctime>
+#include <utility>
 
+#include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "ManualDateActivity.h"
 #include "ReadingStatsStore.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/settings/TimeZoneSelectActivity.h"
 #include "components/UITheme.h"
+#include "components/UiAppHelpers.h"
 #include "fontIds.h"
 #include "util/HeaderDateUtils.h"
 #include "util/TimeUtils.h"
 #include "util/TimeZoneRegistry.h"
 
+namespace fui = freeink::ui;
+
 namespace {
-constexpr int ACTION_COUNT = 5;
-constexpr int HELP_TEXT_LINE_HEIGHT = 18;
+constexpr int ROW_SYNC_NOW = 0;
+constexpr int ROW_SET_DATE = 1;
+constexpr int ROW_WIFI_CHOICE = 2;
+constexpr int ROW_TIME_ZONE = 3;
+constexpr int ROW_DATE_FORMAT = 4;
 
 void wifiOff() {
   TimeUtils::stopNtp();
@@ -28,30 +36,6 @@ void wifiOff() {
   delay(100);
   WiFi.mode(WIFI_OFF);
   delay(100);
-}
-
-int drawWrappedHelpLine(GfxRenderer& renderer, const int left, const int top, const int width, const char* text) {
-  int currentTop = top;
-  const auto wrappedLines = renderer.wrappedText(UI_10_FONT_ID, text, width, 3);
-  for (const auto& line : wrappedLines) {
-    renderer.drawText(UI_10_FONT_ID, left, currentTop, line.c_str());
-    currentTop += HELP_TEXT_LINE_HEIGHT;
-  }
-  return currentTop;
-}
-
-int drawHowItWorksText(GfxRenderer& renderer, const int left, const int top, const int width) {
-  int currentTop = top;
-  renderer.drawText(UI_10_FONT_ID, left, currentTop, tr(STR_SYNC_DAY_INFO_TITLE), true, EpdFontFamily::BOLD);
-  currentTop += 22;
-
-  currentTop = drawWrappedHelpLine(renderer, left, currentTop, width, tr(STR_SYNC_DAY_INFO_1));
-  currentTop += 2;
-  currentTop = drawWrappedHelpLine(renderer, left, currentTop, width, tr(STR_SYNC_DAY_INFO_2));
-  currentTop += 2;
-  currentTop = drawWrappedHelpLine(renderer, left, currentTop, width, tr(STR_SYNC_DAY_INFO_3));
-
-  return currentTop;
 }
 
 std::string getObtainedDateLabel() {
@@ -67,7 +51,7 @@ std::string getTimeZoneLabel() {
   return TimeZoneRegistry::getPresetLabel(TimeZoneRegistry::clampPresetIndex(SETTINGS.timeZonePreset));
 }
 
-std::string getDateFormatLabel() {
+const char* getDateFormatLabel() {
   switch (static_cast<CrossPointSettings::DATE_FORMAT>(SETTINGS.dateFormat)) {
     case CrossPointSettings::DATE_MM_DD_YYYY:
       return tr(STR_DATE_FORMAT_MM_DD_YYYY);
@@ -79,27 +63,40 @@ std::string getDateFormatLabel() {
   }
 }
 
-std::string getWifiChoiceLabel() {
-  return SETTINGS.syncDayWifiChoice == CrossPointSettings::SYNC_DAY_WIFI_MANUAL
-             ? std::string(tr(STR_MANUAL))
-             : std::string(tr(STR_REFRESH_MODE_AUTO));
+const char* getWifiChoiceLabel() {
+  return SETTINGS.syncDayWifiChoice == CrossPointSettings::SYNC_DAY_WIFI_MANUAL ? tr(STR_MANUAL)
+                                                                                : tr(STR_REFRESH_MODE_AUTO);
 }
 
-std::string getNetworkStatusLabel() {
-  return WiFi.status() == WL_CONNECTED ? std::string(tr(STR_CONNECTED)) : std::string(tr(STR_NOT_CONNECTED));
+// Wrapped paragraph: measures the wrapped height, reserves it, draws it.
+void addParagraph(UiAppHost::UiScreen& screen, const char* text, fui::TextStyle style, const int16_t gap) {
+  const fui::Rect body = screen.body();
+  if (body.empty()) return;
+  const fui::Size size = fui::measureWrappedText(screen.target(), text, style, body.width);
+  const fui::Rect rect = screen.takeTop(size.height, gap);
+  screen.target().text(rect, text, style);
 }
 }  // namespace
 
 void SyncDayActivity::onEnter() {
-  Activity::onEnter();
+  UiListActivity::onEnter();
   TimeUtils::configureTimezone();
   wifiConnectedOnEnter = isWifiConnected();
   connectedInActivity = false;
   syncing = false;
   lastSyncSucceeded = false;
   lastSyncFailed = false;
-  selectedIndex = std::clamp(selectedIndex, 0, ACTION_COUNT - 1);
-  requestUpdate();
+
+  const StrId labels[ACTION_COUNT] = {StrId::STR_SYNC_NOW, StrId::STR_SET_DATE, StrId::STR_CHOOSE_WIFI,
+                                      StrId::STR_TIME_ZONE, StrId::STR_DATE_FORMAT};
+  const UIIcon icons[ACTION_COUNT] = {UIIcon::Wifi, UIIcon::Recent, UIIcon::Settings, UIIcon::Settings, UIIcon::Recent};
+  for (int i = 0; i < ACTION_COUNT; ++i) {
+    rowItems[i] = fui::ListItem{};
+    rowItems[i].label = I18N.get(labels[i]);
+    rowItems[i].icon = listIconFor(icons[i], 32);
+    rowItems[i].actionValue = static_cast<int16_t>(i);
+  }
+  refreshRowValues();
 }
 
 void SyncDayActivity::onExit() {
@@ -110,111 +107,106 @@ void SyncDayActivity::onExit() {
   }
 }
 
-void SyncDayActivity::loop() {
-  if (syncing) {
-    return;
+// Assigns the live subtitle/value text into the row-owned strings.
+void SyncDayActivity::refreshRowValues() {
+  rowSubtitles[ROW_SYNC_NOW] = getObtainedDateLabel();
+  rowSubtitles[ROW_SET_DATE] = tr(STR_MANUAL);
+  rowSubtitles[ROW_WIFI_CHOICE] = getWifiChoiceLabel();
+  rowSubtitles[ROW_TIME_ZONE] = getTimeZoneLabel();
+  rowSubtitles[ROW_DATE_FORMAT] = getDateFormatLabel();
+  networkStatus = isWifiConnected() ? tr(STR_CONNECTED) : tr(STR_NOT_CONNECTED);
+  for (int i = 0; i < ACTION_COUNT; ++i) {
+    rowItems[i].subtitle = rowSubtitles[i].c_str();
   }
-
-  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    finish();
-    return;
-  }
-
-  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-    if (selectedIndex == 0) {
-      const bool chooseWifiManually = SETTINGS.syncDayWifiChoice == CrossPointSettings::SYNC_DAY_WIFI_MANUAL;
-      if (chooseWifiManually) {
-        openWifiSelection(false);
-      } else if (isWifiConnected()) {
-        syncTime();
-      } else {
-        openWifiSelection(true);
-      }
-    } else if (selectedIndex == 1) {
-      openManualDateSelection();
-    } else if (selectedIndex == 2) {
-      SETTINGS.syncDayWifiChoice = (SETTINGS.syncDayWifiChoice + 1) % CrossPointSettings::SYNC_DAY_WIFI_CHOICE_COUNT;
-      SETTINGS.saveToFile();
-      requestUpdate();
-    } else if (selectedIndex == 3) {
-      openTimeZoneSelection();
-    } else {
-      SETTINGS.dateFormat = (SETTINGS.dateFormat + 1) % CrossPointSettings::DATE_FORMAT_COUNT;
-      SETTINGS.saveToFile();
-      requestUpdate();
-    }
-    return;
-  }
-
-  buttonNavigator.onNextRelease([this] {
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, ACTION_COUNT);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousRelease([this] {
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, ACTION_COUNT);
-    requestUpdate();
-  });
+  rowItems[ROW_SYNC_NOW].value = networkStatus.c_str();
 }
 
-void SyncDayActivity::render(RenderLock&&) {
-  renderer.clearScreen();
+void SyncDayActivity::activateIndex(const int index) {
+  if (index < 0 || index >= ACTION_COUNT) return;
+  nav.selected = index;
+  if (index == ROW_SYNC_NOW) {
+    app.clearTapFlash();
+    const bool chooseWifiManually = SETTINGS.syncDayWifiChoice == CrossPointSettings::SYNC_DAY_WIFI_MANUAL;
+    if (chooseWifiManually) {
+      openWifiSelection(false);
+    } else if (isWifiConnected()) {
+      syncTime();
+    } else {
+      openWifiSelection(true);
+    }
+  } else if (index == ROW_SET_DATE) {
+    app.clearTapFlash();
+    openManualDateSelection();
+  } else if (index == ROW_WIFI_CHOICE) {
+    SETTINGS.syncDayWifiChoice = (SETTINGS.syncDayWifiChoice + 1) % CrossPointSettings::SYNC_DAY_WIFI_CHOICE_COUNT;
+    SETTINGS.saveToFile();
+    requestUpdate();
+  } else if (index == ROW_TIME_ZONE) {
+    app.clearTapFlash();
+    openTimeZoneSelection();
+  } else {
+    SETTINGS.dateFormat = (SETTINGS.dateFormat + 1) % CrossPointSettings::DATE_FORMAT_COUNT;
+    SETTINGS.saveToFile();
+    requestUpdate();
+  }
+}
 
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const int sidePadding = metrics.contentSidePadding;
+void SyncDayActivity::drawChrome() { HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_SYNC_DAY)); }
 
-  HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_SYNC_DAY));
-
+void SyncDayActivity::render(RenderLock&& lock) {
   if (syncing) {
+    renderer.clearScreen();
+    drawChrome();
+    const int pageHeight = renderer.getScreenHeight();
     renderer.drawCenteredText(UI_12_FONT_ID, pageHeight / 2 - 20, tr(STR_SYNCING_TIME), true, EpdFontFamily::BOLD);
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 8, tr(STR_SYNC_DAY_HINT));
     renderer.displayBuffer();
     return;
   }
+  UiListActivity::render(std::move(lock));
+}
 
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int listTop = contentTop;
-  const int listHeight = metrics.listWithSubtitleRowHeight * ACTION_COUNT;
-  GUI.drawList(
-      renderer, Rect{0, listTop, pageWidth, listHeight}, ACTION_COUNT, selectedIndex,
-      [](int index) {
-        if (index == 0) return std::string(tr(STR_SYNC_NOW));
-        if (index == 1) return std::string(tr(STR_SET_DATE));
-        if (index == 2) return std::string(tr(STR_CHOOSE_WIFI));
-        if (index == 3) return std::string(tr(STR_TIME_ZONE));
-        return std::string(tr(STR_DATE_FORMAT));
-      },
-      [](int index) {
-        if (index == 0) return getObtainedDateLabel();
-        if (index == 1) return std::string(tr(STR_MANUAL));
-        if (index == 2) return getWifiChoiceLabel();
-        if (index == 3) return getTimeZoneLabel();
-        return getDateFormatLabel();
-      },
-      [](int index) {
-        if (index == 0) return UIIcon::Wifi;
-        if (index == 1) return UIIcon::Recent;
-        if (index == 2) return UIIcon::Settings;
-        if (index == 3) return UIIcon::Settings;
-        return UIIcon::Recent;
-      },
-      [](int index) { return index == 0 ? getNetworkStatusLabel() : std::string(); }, false);
+void SyncDayActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
-  int infoTop = listTop + listHeight + metrics.verticalSpacing;
-  const int infoWidth = pageWidth - sidePadding * 2;
-  if (selectedIndex == 0) {
-    const std::string helperText = renderer.truncatedText(UI_10_FONT_ID, getStatusMessage().c_str(), infoWidth);
-    renderer.drawText(UI_10_FONT_ID, sidePadding, infoTop, helperText.c_str());
-    infoTop += HELP_TEXT_LINE_HEIGHT + 10;
+  // Values track live state (Wi-Fi status, settings changed in sub-screens).
+  refreshRowValues();
+
+  fui::ListProps props;
+  props.items = rowItems;
+  props.count = static_cast<uint16_t>(ACTION_COUNT);
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
+  props.valueInset = 8;
+  fui::TextStyle label = screen.theme().smallText;
+  label.bold = true;
+  props.labelText = label;
+  syncListViewport(screen, props, /*hasSubtitle=*/true);
+  // The list takes exactly its rows; the help text lives underneath.
+  const int16_t rowHeight = props.rowHeight > 0 ? props.rowHeight : screen.theme().rowHeight;
+  const int16_t rowGap = props.rowGap >= 0 ? props.rowGap : screen.theme().listRowGap;
+  const int16_t listHeight = static_cast<int16_t>(rowHeight * ACTION_COUNT + rowGap * (ACTION_COUNT - 1));
+  screen.list(props, listHeight);
+
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+  const int16_t sidePadding = static_cast<int16_t>(metrics.contentSidePadding);
+  screen.insetContent(fui::Insets{0, sidePadding, 0, sidePadding});
+
+  fui::TextStyle body = screen.theme().smallText;
+  body.maxLines = 4;
+  if (nav.selected == ROW_SYNC_NOW) {
+    const std::string status = getStatusMessage();
+    addParagraph(screen, status.c_str(), body, static_cast<int16_t>(screen.theme().spaceMd));
   }
-  drawHowItWorksText(renderer, sidePadding, infoTop, infoWidth);
-
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-
-  renderer.displayBuffer();
+  fui::TextStyle title = body;
+  title.bold = true;
+  addParagraph(screen, tr(STR_SYNC_DAY_INFO_TITLE), title, static_cast<int16_t>(screen.theme().spaceSm));
+  addParagraph(screen, tr(STR_SYNC_DAY_INFO_1), body, static_cast<int16_t>(screen.theme().spaceXs));
+  addParagraph(screen, tr(STR_SYNC_DAY_INFO_2), body, static_cast<int16_t>(screen.theme().spaceXs));
+  addParagraph(screen, tr(STR_SYNC_DAY_INFO_3), body, 0);
 }
 
 bool SyncDayActivity::isWifiConnected() const { return WiFi.status() == WL_CONNECTED; }

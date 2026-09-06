@@ -8,17 +8,22 @@
 #include <ctime>
 #include <string>
 
-#include "CrossPointState.h"
-#include "ReadingStatsStore.h"
 #include "AppMetricCard.h"
+#include "CrossPointState.h"
+#include "MappedInputManager.h"
 #include "ReadingDayDetailActivity.h"
+#include "ReadingStatsStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/HeaderDateUtils.h"
 #include "util/ReadingStatsAnalytics.h"
 #include "util/TimeUtils.h"
 
+namespace fui = freeink::ui;
+
 namespace {
+constexpr fui::ActionId ACTION_MONTH = 1;  // value = -1 previous / +1 next
+constexpr fui::ActionId ACTION_GRID = 2;   // the tapped cell is resolved from the tap position
 constexpr int SECTION_GAP = 10;
 constexpr int MONTH_HEADER_HEIGHT = 34;
 constexpr int SUMMARY_CARD_HEIGHT = 66;
@@ -221,6 +226,44 @@ void drawLegendSwatch(GfxRenderer& renderer, const Rect& rect, const int level) 
   renderer.drawRect(rect.x, rect.y, rect.width, rect.height);
 }
 
+// Page geometry shared by render() (drawing), buildHeatmapScreen() (hit
+// rects) and handleGridTap() (cell lookup), so the three never disagree.
+struct HeatmapLayout {
+  int pageWidth = 0;
+  int sidePadding = 0;
+  int contentTop = 0;
+  int summaryTop = 0;
+  int cardWidth = 0;
+  int gridTop = 0;
+  int cellWidth = 0;
+  int cellHeight = 0;
+  int legendTop = 0;
+};
+
+HeatmapLayout computeLayout(const GfxRenderer& renderer) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  HeatmapLayout layout;
+  layout.pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  layout.sidePadding = metrics.contentSidePadding;
+  layout.contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  layout.summaryTop = layout.contentTop + MONTH_HEADER_HEIGHT + 4;
+  layout.cardWidth = (layout.pageWidth - layout.sidePadding * 2 - SUMMARY_CARD_GAP) / 2;
+  layout.gridTop = layout.summaryTop + (SUMMARY_CARD_HEIGHT + SUMMARY_CARD_GAP) * 2 + SECTION_GAP;
+  layout.legendTop = pageHeight - metrics.buttonHintsHeight - LEGEND_HEIGHT - 4;
+  const int gridHeight = std::max(120, layout.legendTop - layout.gridTop - SECTION_GAP);
+  layout.cellWidth = (layout.pageWidth - layout.sidePadding * 2 - HEATMAP_GRID_GAP * 6) / 7;
+  layout.cellHeight = (gridHeight - HEATMAP_GRID_GAP * 5) / 6;
+  return layout;
+}
+
+// Day ordinal of the grid's top-left cell (the Monday on or before the 1st).
+uint32_t gridStartOrdinal(const int year, const unsigned month) {
+  const uint32_t firstDayOrdinal = TimeUtils::getDayOrdinalForDate(year, month, 1);
+  const int firstWeekday = static_cast<int>((firstDayOrdinal + 3U) % 7U);  // Monday = 0
+  return firstDayOrdinal - static_cast<uint32_t>(firstWeekday);
+}
+
 MonthSummary buildMonthSummary(const int year, const unsigned month) {
   MonthSummary summary;
   const uint32_t monthStart = TimeUtils::getDayOrdinalForDate(year, month, 1);
@@ -249,13 +292,11 @@ MonthSummary buildMonthSummary(const int year, const unsigned month) {
 std::array<HeatmapCell, 42> buildHeatmapCells(const int year, const unsigned month, const uint32_t referenceDayOrdinal,
                                               const uint32_t selectedDayOrdinal) {
   std::array<HeatmapCell, 42> cells{};
-  const uint32_t firstDayOrdinal = TimeUtils::getDayOrdinalForDate(year, month, 1);
-  const int firstWeekday = static_cast<int>((firstDayOrdinal + 3U) % 7U);  // Monday = 0
-  const uint32_t gridStartOrdinal = firstDayOrdinal - static_cast<uint32_t>(firstWeekday);
+  const uint32_t startOrdinal = gridStartOrdinal(year, month);
 
   for (size_t index = 0; index < cells.size(); ++index) {
     auto& cell = cells[index];
-    cell.dayOrdinal = gridStartOrdinal + static_cast<uint32_t>(index);
+    cell.dayOrdinal = startOrdinal + static_cast<uint32_t>(index);
     int cellYear = 0;
     unsigned cellMonth = 0;
     unsigned cellDay = 0;
@@ -285,8 +326,7 @@ void drawLegend(GfxRenderer& renderer, const Rect& rect) {
     int level;
     const char* label;
   };
-  static constexpr LegendLevel LEVELS[] = {
-      {1, ">0"}, {2, "30m+"}, {3, "60m+"}, {4, "120m+"}, {5, "240m+"}};
+  static constexpr LegendLevel LEVELS[] = {{1, ">0"}, {2, "30m+"}, {3, "60m+"}, {4, "120m+"}, {5, "240m+"}};
   constexpr int LEVEL_COUNT = sizeof(LEVELS) / sizeof(LEVELS[0]);
 
   const int itemWidth = rect.width / LEVEL_COUNT;
@@ -311,7 +351,75 @@ void ReadingHeatmapActivity::onEnter() {
 
   waitForConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
   resetSelectedDay();
+
+  resetUi();
+  app.on(ACTION_MONTH, &ReadingHeatmapActivity::onMonthEvent, this);
+  app.setScreen(&ReadingHeatmapActivity::heatmapScreen, this);
   requestUpdate();
+}
+
+void ReadingHeatmapActivity::heatmapScreen(UiScreen& screen, void* user) {
+  static_cast<ReadingHeatmapActivity*>(user)->buildHeatmapScreen(screen);
+}
+
+void ReadingHeatmapActivity::onMonthEvent(const fui::ActionEvent& event, void* user) {
+  static_cast<ReadingHeatmapActivity*>(user)->goToAdjacentMonth(event.value);
+}
+
+// Touch hit rects over the hand-drawn page (the builder draws nothing).
+void ReadingHeatmapActivity::buildHeatmapScreen(UiScreen& screen) {
+  const HeatmapLayout layout = computeLayout(renderer);
+  const int halfWidth = layout.pageWidth / 2;
+  screen.frame().hit(fui::makeRect(0, layout.contentTop, halfWidth, MONTH_HEADER_HEIGHT), ACTION_MONTH, -1,
+                     fui::InputTouch);
+  screen.frame().hit(fui::makeRect(halfWidth, layout.contentTop, layout.pageWidth - halfWidth, MONTH_HEADER_HEIGHT),
+                     ACTION_MONTH, +1, fui::InputTouch);
+  // One rect for the whole 7x6 grid (42 per-cell rects would overflow the
+  // shared interaction table); loop() resolves the cell from the tap point.
+  const int gridWidth = layout.cellWidth * 7 + HEATMAP_GRID_GAP * 6;
+  const int gridHeight = layout.cellHeight * 6 + HEATMAP_GRID_GAP * 5;
+  screen.frame().hit(fui::makeRect(layout.sidePadding, layout.gridTop, gridWidth, gridHeight), ACTION_GRID, 0,
+                     fui::InputTouch);
+}
+
+void ReadingHeatmapActivity::handleGridTap(const int x, const int y) {
+  const HeatmapLayout layout = computeLayout(renderer);
+  const int col = (x - layout.sidePadding) / (layout.cellWidth + HEATMAP_GRID_GAP);
+  const int row = (y - layout.gridTop) / (layout.cellHeight + HEATMAP_GRID_GAP);
+  if (x < layout.sidePadding || y < layout.gridTop || col < 0 || col > 6 || row < 0 || row > 5) {
+    return;
+  }
+  // Ignore taps in the gap band between cells.
+  if ((x - layout.sidePadding) % (layout.cellWidth + HEATMAP_GRID_GAP) >= layout.cellWidth ||
+      (y - layout.gridTop) % (layout.cellHeight + HEATMAP_GRID_GAP) >= layout.cellHeight) {
+    return;
+  }
+
+  const uint32_t dayOrdinal = gridStartOrdinal(viewedYear, viewedMonth) + static_cast<uint32_t>(row * 7 + col);
+  int year = 0;
+  unsigned month = 0;
+  unsigned day = 0;
+  if (!TimeUtils::getDateFromDayOrdinal(dayOrdinal, year, month, day)) {
+    return;
+  }
+  if (year != viewedYear || month != viewedMonth) {
+    // A leading/trailing day of the neighbouring month: page to that month
+    // with the tapped day selected (what the Left/Right buttons do across a
+    // month boundary).
+    viewedYear = year;
+    viewedMonth = month;
+    selectedDayOrdinal = dayOrdinal;
+    requestUpdate();
+    return;
+  }
+  selectedDayOrdinal = dayOrdinal;
+  openSelectedDay();
+}
+
+void ReadingHeatmapActivity::openSelectedDay() {
+  app.clearTapFlash();  // leaving for the day detail screen
+  startActivityForResult(std::make_unique<ReadingDayDetailActivity>(renderer, mappedInput, selectedDayOrdinal),
+                         [this](const ActivityResult&) { requestUpdate(); });
 }
 
 void ReadingHeatmapActivity::onExit() {
@@ -365,8 +473,8 @@ void ReadingHeatmapActivity::resetSelectedDay() {
   int year = 0;
   unsigned month = 0;
   unsigned day = 0;
-  if (referenceDayOrdinal != 0 && TimeUtils::getDateFromDayOrdinal(referenceDayOrdinal, year, month, day) && year == viewedYear &&
-      month == viewedMonth) {
+  if (referenceDayOrdinal != 0 && TimeUtils::getDateFromDayOrdinal(referenceDayOrdinal, year, month, day) &&
+      year == viewedYear && month == viewedMonth) {
     selectedDayOrdinal = referenceDayOrdinal;
     return;
   }
@@ -397,7 +505,8 @@ void ReadingHeatmapActivity::moveSelection(const int delta) {
   int year = 0;
   unsigned month = 0;
   unsigned day = 0;
-  if (!TimeUtils::getDateFromDayOrdinal(selectedDayOrdinal, year, month, day) || year != viewedYear || month != viewedMonth) {
+  if (!TimeUtils::getDateFromDayOrdinal(selectedDayOrdinal, year, month, day) || year != viewedYear ||
+      month != viewedMonth) {
     resetSelectedDay();
     requestUpdate();
     return;
@@ -439,8 +548,30 @@ void ReadingHeatmapActivity::loop() {
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    startActivityForResult(std::make_unique<ReadingDayDetailActivity>(renderer, mappedInput, selectedDayOrdinal),
-                           [this](const ActivityResult&) { requestUpdate(); });
+    openSelectedDay();
+    return;
+  }
+
+  // Touch goes through the FreeInkApp: render() registered the month-header
+  // and grid hit rects. The month handler dispatches itself; the grid tap
+  // needs the contact point, which the route snapshot carries.
+  const auto route = routeTouch(mappedInput);
+  if (route.routed && app.invalidated()) requestUpdate();
+  if (route) {
+    if (route.event.action == ACTION_GRID) {
+      handleGridTap(route.snap.touchX, route.snap.touchY);
+    }
+    return;
+  }
+
+  // Swipe left/right pages months like the Up/Down buttons.
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Left) {
+    goToAdjacentMonth(1);
+    return;
+  }
+  if (swipe == MappedInputManager::SwipeDir::Right) {
+    goToAdjacentMonth(-1);
     return;
   }
 
@@ -453,60 +584,60 @@ void ReadingHeatmapActivity::loop() {
 void ReadingHeatmapActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const int sidePadding = metrics.contentSidePadding;
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const HeatmapLayout layout = computeLayout(renderer);
+  const int pageWidth = layout.pageWidth;
+  const int sidePadding = layout.sidePadding;
+  const int contentTop = layout.contentTop;
 
   HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_READING_HEATMAP));
 
   const uint32_t referenceTimestamp = getReferenceDisplayTimestamp();
-  const uint32_t referenceDayOrdinal = TimeUtils::isClockValid(referenceTimestamp)
-                                           ? TimeUtils::getLocalDayOrdinal(referenceTimestamp)
-                                           : (READING_STATS.hasReadingDays() ? READING_STATS.getReadingDays().back().dayOrdinal : 0);
+  const uint32_t referenceDayOrdinal =
+      TimeUtils::isClockValid(referenceTimestamp)
+          ? TimeUtils::getLocalDayOrdinal(referenceTimestamp)
+          : (READING_STATS.hasReadingDays() ? READING_STATS.getReadingDays().back().dayOrdinal : 0);
   const auto monthSummary = buildMonthSummary(viewedYear, viewedMonth);
   const auto cells = buildHeatmapCells(viewedYear, viewedMonth, referenceDayOrdinal, selectedDayOrdinal);
-  const std::string monthLabel = formatMonthLabel(viewedYear, viewedMonth);
+  // Touch boards get "< Month >" so the header reads as the month pager it is
+  // (tap the left/right half); button boards keep the plain label.
+  const std::string monthLabel = mappedInput.hasTouch() ? "< " + formatMonthLabel(viewedYear, viewedMonth) + " >"
+                                                        : formatMonthLabel(viewedYear, viewedMonth);
   const std::string selectedDateLabel = ReadingStatsAnalytics::formatDayOrdinalLabel(selectedDayOrdinal);
 
   GUI.drawSubHeader(renderer, Rect{0, contentTop, pageWidth, MONTH_HEADER_HEIGHT}, monthLabel.c_str(),
                     selectedDateLabel.empty() ? nullptr : selectedDateLabel.c_str());
 
-  const int summaryTop = contentTop + MONTH_HEADER_HEIGHT + 4;
-  const int cardWidth = (pageWidth - sidePadding * 2 - SUMMARY_CARD_GAP) / 2;
-  const std::string bestDayValue =
-      monthSummary.bestDayOfMonth > 0
-          ? ReadingStatsAnalytics::formatDurationHm(monthSummary.bestDayReadingMs) + " (" +
-                std::to_string(monthSummary.bestDayOfMonth) + ")"
-          : ReadingStatsAnalytics::formatDurationHm(monthSummary.bestDayReadingMs);
+  const int summaryTop = layout.summaryTop;
+  const int cardWidth = layout.cardWidth;
+  const std::string bestDayValue = monthSummary.bestDayOfMonth > 0
+                                       ? ReadingStatsAnalytics::formatDurationHm(monthSummary.bestDayReadingMs) + " (" +
+                                             std::to_string(monthSummary.bestDayOfMonth) + ")"
+                                       : ReadingStatsAnalytics::formatDurationHm(monthSummary.bestDayReadingMs);
   drawMetricCard(renderer, Rect{sidePadding, summaryTop, cardWidth, SUMMARY_CARD_HEIGHT}, tr(STR_MONTH_TOTAL),
                  ReadingStatsAnalytics::formatDurationHm(monthSummary.totalReadingMs));
   drawMetricCard(renderer, Rect{sidePadding + cardWidth + SUMMARY_CARD_GAP, summaryTop, cardWidth, SUMMARY_CARD_HEIGHT},
                  tr(STR_DAYS_READ), std::to_string(monthSummary.daysRead));
-  drawMetricCard(renderer, Rect{sidePadding, summaryTop + SUMMARY_CARD_HEIGHT + SUMMARY_CARD_GAP, cardWidth,
-                                SUMMARY_CARD_HEIGHT},
+  drawMetricCard(renderer,
+                 Rect{sidePadding, summaryTop + SUMMARY_CARD_HEIGHT + SUMMARY_CARD_GAP, cardWidth, SUMMARY_CARD_HEIGHT},
                  tr(STR_BEST_DAY), bestDayValue);
   drawMetricCard(renderer,
                  Rect{sidePadding + cardWidth + SUMMARY_CARD_GAP, summaryTop + SUMMARY_CARD_HEIGHT + SUMMARY_CARD_GAP,
                       cardWidth, SUMMARY_CARD_HEIGHT},
                  tr(STR_STREAK), std::to_string(READING_STATS.getCurrentStreakDays()));
 
-  const int gridTop = summaryTop + (SUMMARY_CARD_HEIGHT + SUMMARY_CARD_GAP) * 2 + SECTION_GAP;
-  const int legendTop = pageHeight - metrics.buttonHintsHeight - LEGEND_HEIGHT - 4;
-  const int gridHeight = std::max(120, legendTop - gridTop - SECTION_GAP);
-  const int cellWidth = (pageWidth - sidePadding * 2 - HEATMAP_GRID_GAP * 6) / 7;
-  const int cellHeight = (gridHeight - HEATMAP_GRID_GAP * 5) / 6;
-
   for (int index = 0; index < 42; ++index) {
     const int row = index / 7;
     const int col = index % 7;
-    const int x = sidePadding + col * (cellWidth + HEATMAP_GRID_GAP);
-    const int y = gridTop + row * (cellHeight + HEATMAP_GRID_GAP);
-    drawHeatCell(renderer, Rect{x, y, cellWidth, cellHeight}, cells[static_cast<size_t>(index)]);
+    const int x = sidePadding + col * (layout.cellWidth + HEATMAP_GRID_GAP);
+    const int y = layout.gridTop + row * (layout.cellHeight + HEATMAP_GRID_GAP);
+    drawHeatCell(renderer, Rect{x, y, layout.cellWidth, layout.cellHeight}, cells[static_cast<size_t>(index)]);
   }
 
-  drawLegend(renderer, Rect{sidePadding, legendTop, pageWidth - sidePadding * 2, LEGEND_HEIGHT});
+  drawLegend(renderer, Rect{sidePadding, layout.legendTop, pageWidth - sidePadding * 2, LEGEND_HEIGHT});
+
+  // Rebuild the app's touch hit rects over the page (the screen builder draws
+  // nothing, so the visuals above are untouched).
+  renderUi();
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OPEN), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

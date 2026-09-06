@@ -30,8 +30,12 @@ void FlashcardSessionSummaryActivity::onEnter() {
 }
 
 void FlashcardSessionSummaryActivity::loop() {
+  // Read-only summary: Back, Done, or a tap anywhere on the page dismiss it
+  // (the X4 Pro has no Back/Confirm front buttons).
+  int tapX = 0;
+  int tapY = 0;
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
-      mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      mappedInput.wasReleased(MappedInputManager::Button::Confirm) || mappedInput.wasScreenTapped(tapX, tapY)) {
     finish();
   }
 }

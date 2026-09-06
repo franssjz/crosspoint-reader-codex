@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <utility>
 
 #include "KOReaderCredentialStore.h"
 
@@ -74,8 +75,7 @@ void beginRequest(const char* operation) {
   KOReaderSyncClient::lastEspError = 0;
   KOReaderSyncClient::lastHttpCode = 0;
   KOReaderSyncClient::lastHeapAtFailure = ESP.getFreeHeap();
-  KOReaderSyncClient::lastContigHeapAtFailure =
-      heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT);
+  KOReaderSyncClient::lastContigHeapAtFailure = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT);
   g_lastResponsePreview[0] = '\0';
 }
 
@@ -86,8 +86,7 @@ const char* skipBomAndWhitespace(const char* p) {
     return "";
   }
   if (static_cast<unsigned char>(p[0]) == 0xEF && p[1] != '\0' && p[2] != '\0' &&
-      static_cast<unsigned char>(p[1]) == 0xBB &&
-      static_cast<unsigned char>(p[2]) == 0xBF) {
+      static_cast<unsigned char>(p[1]) == 0xBB && static_cast<unsigned char>(p[2]) == 0xBF) {
     p += 3;
   }
   while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
@@ -113,8 +112,7 @@ bool startsWithIgnoreCase(const char* value, const char* prefix) {
   const size_t prefixLen = strlen(prefix);
   if (strlen(value) < prefixLen) return false;
   for (size_t i = 0; i < prefixLen; ++i) {
-    if (std::tolower(static_cast<unsigned char>(value[i])) !=
-        std::tolower(static_cast<unsigned char>(prefix[i]))) {
+    if (std::tolower(static_cast<unsigned char>(value[i])) != std::tolower(static_cast<unsigned char>(prefix[i]))) {
       return false;
     }
   }
@@ -179,7 +177,7 @@ int buildCandidateProfiles(EndpointProfile profiles[2]) {
   if (g_lastResolvedProfile != EndpointProfile::UNKNOWN) {
     profiles[0] = g_lastResolvedProfile;
     profiles[1] = (g_lastResolvedProfile == EndpointProfile::CWA_KOSYNC) ? EndpointProfile::LEGACY_ROOT
-                                                                          : EndpointProfile::CWA_KOSYNC;
+                                                                         : EndpointProfile::CWA_KOSYNC;
     return 2;
   }
 
@@ -295,8 +293,7 @@ bool checkHeapForTls() {
 
 void refreshHeapSnapshot() {
   KOReaderSyncClient::lastHeapAtFailure = ESP.getFreeHeap();
-  KOReaderSyncClient::lastContigHeapAtFailure =
-      heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT);
+  KOReaderSyncClient::lastContigHeapAtFailure = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT);
 }
 
 void logTlsAttemptPlan(const char* operation, int attempt) {
@@ -396,8 +393,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::registerUser() {
   return registerUser(KOREADER_STORE.getUsername(), KOREADER_STORE.getMd5Password(), KOREADER_STORE.getBaseUrl());
 }
 
-KOReaderSyncClient::Error KOReaderSyncClient::registerUser(const std::string& username,
-                                                           const std::string& md5Password,
+KOReaderSyncClient::Error KOReaderSyncClient::registerUser(const std::string& username, const std::string& md5Password,
                                                            const std::string& baseUrl) {
   if (username.empty() || md5Password.empty()) return NO_CREDENTIALS;
 
@@ -511,8 +507,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::authenticate() {
         esp_http_client_cleanup(client);
       }
 
-      LOG_DBG("KOSync", "Auth %s -> %d (err: %s) [attempt %d]", url.c_str(), httpCode, esp_err_to_name(err),
-              attempt);
+      LOG_DBG("KOSync", "Auth %s -> %d (err: %s) [attempt %d]", url.c_str(), httpCode, esp_err_to_name(err), attempt);
       if (err == ESP_OK && (httpCode < 200 || httpCode >= 300)) {
         rememberResponsePreview(activeBuf->data);
       }
@@ -675,6 +670,25 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
       outProgress.device = doc["device"].as<std::string>();
       outProgress.deviceId = doc["device_id"].as<std::string>();
       outProgress.timestamp = doc["timestamp"].as<int64_t>();
+      outProgress.position.reset();
+      if (KOREADER_STORE.usesCrossPointSyncServer()) {
+        // CrossPoint-specific extension (upstream parity): only crosspoint-sync servers send it.
+        const JsonObjectConst pos = doc["position"].as<JsonObjectConst>();
+        if (!pos.isNull()) {
+          KOReaderRichPosition rich;
+          rich.pctQ = pos["pctQ"].as<uint32_t>();
+          rich.spineIndex = pos["spine"].as<uint16_t>();
+          rich.pageNumber = pos["page"].as<uint16_t>();
+          const uint16_t pages = pos["pages"].as<uint16_t>();
+          rich.totalPages = pages > 0 ? pages : 1;
+          const uint16_t para = pos["para"].as<uint16_t>();
+          if (para > 0) rich.paragraphIndex = para;
+          rich.xpath = pos["xpath"].as<const char*>() ? pos["xpath"].as<const char*>() : "";
+          LOG_DBG("KOSync", "Got rich position: spine=%u page=%u/%u para=%u", rich.spineIndex, rich.pageNumber,
+                  rich.totalPages, para);
+          outProgress.position = std::move(rich);
+        }
+      }
 
       LOG_INF("KOSync", "Got progress: %.2f%% at %s", outProgress.percentage * 100, outProgress.progress.c_str());
       rememberResolvedProfile(profile);
@@ -717,6 +731,18 @@ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgr
   doc["percentage"] = progress.percentage;
   doc["device"] = DEVICE_NAME;
   doc["device_id"] = DEVICE_ID;
+  if (progress.position.has_value() && KOREADER_STORE.usesCrossPointSyncServer()) {
+    // CrossPoint-specific extension: do not send it to third-party KOSync servers.
+    const auto& p = *progress.position;
+    auto pos = doc["position"].to<JsonObject>();
+    pos["pctQ"] = p.pctQ;
+    pos["spine"] = p.spineIndex;
+    pos["page"] = p.pageNumber;
+    pos["pages"] = p.totalPages;
+    if (p.paragraphIndex.has_value()) pos["para"] = *p.paragraphIndex;
+    // Server rejects the whole position object if xpath exceeds 120 bytes.
+    if (!p.xpath.empty() && p.xpath.size() <= 120) pos["xpath"] = p.xpath;
+  }
 
   std::string body;
   serializeJson(doc, body);
@@ -884,6 +910,8 @@ const char* KOReaderSyncClient::errorString(Error error) {
       return "JSON parse error";
     case NOT_FOUND:
       return "No progress found";
+    case LOW_MEMORY:
+      return "Not enough memory for TLS";
     case USER_EXISTS:
       return "Username is already taken";
     case REGISTRATION_DISABLED:

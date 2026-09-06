@@ -1,5 +1,10 @@
 name: Pre-release Check
 
+# Dry-run builds both release environments (gh_release for the ESP32-C3 X4/X3
+# image, x4pro-gh_release for the ESP32-S3 X4 Pro image), validates the two
+# packaged artifact pairs against the candidate tag, and checks the auto-flash
+# manifest. Nothing is tagged or published.
+
 on:
   workflow_dispatch:
     inputs:
@@ -8,7 +13,7 @@ on:
         required: true
         type: string
       flash_budget_percent:
-        description: "Maximum gh_release flash usage percent"
+        description: "Maximum flash usage percent of each board's OTA app slot (C3: 6.4 MB, X4 Pro: 8.2 MB)"
         required: false
         default: "97.5"
         type: string
@@ -38,15 +43,30 @@ jobs:
           enable-cache: false
 
       - name: Install PlatformIO Core
-        run: uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+        run: |
+          uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+          # platform-espressif32's builder/main.py imports these unconditionally; its own
+          # penv bootstrap (builder/penv_setup.py) is supposed to install them automatically
+          # but isn't picking them up reliably in this runner image, so pin them explicitly.
+          uv pip install --system -U "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
+            "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2" \
+            "cryptography>=45.0.3" "certifi>=2025.8.3" "ecdsa>=0.19.1" "bitstring>=4.3.1" \
+            "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
 
-      - name: Run pre-release check
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Run pre-release check (gh_release + x4pro-gh_release)
         run: |
           python scripts/pre_release_check.py \
             --tag "${{ inputs.tag }}" \
             --flash-budget-percent "${{ inputs.flash_budget_percent }}"
 
-      - name: Upload firmware budget report
+      - name: Upload firmware budget reports
         uses: actions/upload-artifact@v4
         with:
           name: CPR-vCodex-${{ inputs.tag }}-firmware-budget
@@ -54,4 +74,7 @@ jobs:
             artifacts/${{ inputs.tag }}-build.log
             artifacts/${{ inputs.tag }}-firmware-budget.json
             artifacts/${{ inputs.tag }}-firmware-budget.md
+            artifacts/${{ inputs.tag }}-x4pro-build.log
+            artifacts/${{ inputs.tag }}-x4pro-firmware-budget.json
+            artifacts/${{ inputs.tag }}-x4pro-firmware-budget.md
           if-no-files-found: error

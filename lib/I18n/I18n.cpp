@@ -1,11 +1,11 @@
 #include "I18n.h"
 
-#include <cstddef>
-#include <cstring>
-
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Serialization.h>
+
+#include <cstddef>
+#include <cstring>
 
 #include "I18nStrings.h"
 
@@ -62,7 +62,7 @@ Language I18n::languageFromCode(const char* code) {
 void I18n::saveSettings() {
   Storage.mkdir("/.crosspoint");
 
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForWrite("I18N", SETTINGS_FILE, file)) {
     LOG_ERR("I18N", "Failed to save settings");
     return;
@@ -76,7 +76,7 @@ void I18n::saveSettings() {
 }
 
 void I18n::loadSettings() {
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("I18N", SETTINGS_FILE, file)) {
     LOG_DBG("I18N", "No settings file, using default (English)");
     return;

@@ -6,9 +6,13 @@
 #include "HalStorage.h"
 #include "Logging.h"
 #include "esp_debug_helpers.h"
+#include "esp_memory_utils.h"
 #include "esp_private/esp_cpu_internal.h"
 #include "esp_private/esp_system_attr.h"
 #include "esp_private/panic_internal.h"
+#if !__riscv
+#include <xtensa_context.h>  // XtExcFrame for the stack capture below
+#endif
 
 #define MAX_PANIC_STACK_DEPTH 32
 #define PANIC_CAPTURE_MAGIC 0x50414E49u
@@ -45,23 +49,31 @@ void IRAM_ATTR __wrap_panic_print_backtrace(const void* frame, int core) {
     __real_panic_print_backtrace(frame, core);
     return;
   }
+
   for (size_t i = 0; i < MAX_PANIC_STACK_DEPTH; i++) {
     panicStack[i].sp = 0;
   }
 
-  // Copied from components/esp_system/port/arch/riscv/panic_arch.c
-  uint32_t sp = (uint32_t)((RvExcFrame*)frame)->sp;
+  // Stack window dump, mirroring components/esp_system/port/arch/*/panic_arch.c.
+  // Hardware exceptions never reach __wrap_panic_abort, so on both
+  // architectures this dump is the only diagnostic a crash leaves on-device.
+#if __riscv
+  const uint32_t sp = (uint32_t)((RvExcFrame*)frame)->sp;
+#else
+  const uint32_t sp = (uint32_t)((XtExcFrame*)frame)->a1;
+#endif
+  constexpr uint32_t captureBytes = 1024;
+  if (!esp_stack_ptr_is_sane(sp) || sp > UINT32_MAX - captureBytes ||
+      !esp_ptr_in_dram(reinterpret_cast<const void*>(sp + captureBytes - 1))) {
+    __real_panic_print_backtrace(frame, core);
+    return;
+  }
   const int per_line = 8;
   int depth = 0;
-  for (int x = 0; x < 1024; x += per_line * sizeof(uint32_t)) {
+  for (int x = 0; x < captureBytes; x += per_line * sizeof(uint32_t)) {
     uint32_t* spp = (uint32_t*)(sp + x);
-    // panic_print_hex(sp + x);
-    // panic_print_str(": ");
     panicStack[depth].sp = sp + x;
     for (int y = 0; y < per_line; y++) {
-      // panic_print_str("0x");
-      // panic_print_hex(spp[y]);
-      // panic_print_str(y == per_line - 1 ? "\r\n" : " ");
       panicStack[depth].spp[y] = spp[y];
     }
 
@@ -79,8 +91,8 @@ void IRAM_ATTR __wrap_panic_print_backtrace(const void* frame, int core) {
 namespace HalSystem {
 
 void begin() {
-  // Preserve captured diagnostics only for an actual panic reboot. Ordinary
-  // boots clear stale RTC memory left by a previous session.
+  // On a panic reboot, preserve diagnostics until checkPanic() has tried to write them to the SD card.
+  // Ordinary boots clear any stale retained diagnostics.
   if (!isRebootFromPanic()) {
     clearPanic();
   } else {
@@ -102,8 +114,8 @@ void checkPanic() {
       const size_t written = file.write(panicInfo.c_str(), panicInfo.size());
       file.close();
       if (written == panicInfo.size()) {
-        // Retain the message for CrashActivity but consume the watchdog marker,
-        // so a later reset cannot be mistaken for this same crash.
+        // Keep the crash data for CrashActivity, but mark it consumed so a
+        // later watchdog reset cannot be mistaken for this panic.
         panicCaptureMarker = 0;
         LOG_INF("SYS", "Dumped panic info to SD card");
       } else {
@@ -124,6 +136,31 @@ void clearPanic() {
   clearLastLogs();
 }
 
+static const char* resetReasonName(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_PANIC:
+      return "PANIC (exception/abort)";
+    case ESP_RST_CPU_LOCKUP:
+      return "CPU_LOCKUP";
+    case ESP_RST_INT_WDT:
+      return "INT_WDT";
+    case ESP_RST_TASK_WDT:
+      return "TASK_WDT";
+    case ESP_RST_WDT:
+      return "WDT (other)";
+    case ESP_RST_BROWNOUT:
+      return "BROWNOUT";
+    case ESP_RST_POWERON:
+      return "POWERON";
+    case ESP_RST_SW:
+      return "SW";
+    case ESP_RST_DEEPSLEEP:
+      return "DEEPSLEEP";
+    default:
+      return "OTHER";
+  }
+}
+
 std::string getPanicInfo(bool full) {
   if (!full) {
     return panicMessage;
@@ -131,6 +168,10 @@ std::string getPanicInfo(bool full) {
     std::string info;
 
     info += std::string("CrossPoint version: ") + CPR_CROSSPOINT_VERSION;
+    // A lockup or hardware watchdog resets without running any panic hook, so
+    // the reason and stack come back empty; the reset cause is then the only
+    // way to tell those apart from a true panic.
+    info += "\n\nReset reason: " + std::string(resetReasonName(esp_reset_reason()));
     info += "\n\nPanic reason: " + std::string(panicMessage);
     info += "\n\nLast logs:\n" + getLastLogs();
     info += "\n\nStack memory:\n";

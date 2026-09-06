@@ -11,18 +11,30 @@
 #include "AchievementsStore.h"
 #include "ReadingDateSelectionActivity.h"
 #include "ReadingStatsStore.h"
+#include "StepperFieldsUi.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/HeaderDateUtils.h"
 #include "util/ReadingStatsAnalytics.h"
 #include "util/TimeUtils.h"
 
+namespace fui = freeink::ui;
+
 namespace {
 constexpr int FIELD_COUNT = 3;
+constexpr int FIELD_ACTION = 0;
+constexpr int FIELD_DATE = 1;
+constexpr int FIELD_AMOUNT = 2;
 constexpr int OPERATION_COUNT = 2;
 constexpr int DURATION_COUNT = 4;
 constexpr int64_t MINUTES_TO_MS = 60LL * 1000LL;
 constexpr int DURATION_MINUTES[DURATION_COUNT] = {15, 30, 45, 60};
+
+constexpr fui::ActionId ACTION_FIELD = 1;
+constexpr fui::ActionId ACTION_DEC = 2;
+constexpr fui::ActionId ACTION_INC = 3;
+constexpr fui::ActionId ACTION_CANCEL = 4;
+constexpr fui::ActionId ACTION_OK = 5;
 
 int wrapIndex(const int value, const int delta, const int count) {
   int next = value + delta;
@@ -41,14 +53,28 @@ void BookReadingAdjustmentActivity::onEnter() {
   selectedDuration = 1;
   lastApplyFailed = false;
   initializeSelectedDate();
+  resetUi();
+  app.on(ACTION_FIELD, &BookReadingAdjustmentActivity::onFieldEvent, this);
+  app.on(ACTION_DEC, &BookReadingAdjustmentActivity::onStepEvent, this);
+  app.on(ACTION_INC, &BookReadingAdjustmentActivity::onStepEvent, this);
+  app.on(ACTION_CANCEL, &BookReadingAdjustmentActivity::onCancelEvent, this);
+  app.on(ACTION_OK, &BookReadingAdjustmentActivity::onOkEvent, this);
+  app.setScreen(&BookReadingAdjustmentActivity::screenTrampoline, this);
   requestUpdate();
 }
 
-void BookReadingAdjustmentActivity::adjustSelectedValue(const int delta) {
+void BookReadingAdjustmentActivity::selectField(const int field) {
+  if (field < 0 || field >= FIELD_COUNT) return;
+  selectedField = field;
   lastApplyFailed = false;
-  if (selectedField == 0) {
+  requestUpdate();
+}
+
+void BookReadingAdjustmentActivity::adjustValue(const int field, const int delta) {
+  lastApplyFailed = false;
+  if (field == FIELD_ACTION) {
     selectedOperation = wrapIndex(selectedOperation, delta, OPERATION_COUNT);
-  } else if (selectedField == 1) {
+  } else if (field == FIELD_DATE) {
     if (selectedDayOrdinal != 0 || delta > 0) {
       selectedDayOrdinal = static_cast<uint32_t>(static_cast<int32_t>(selectedDayOrdinal) + delta);
     }
@@ -164,12 +190,6 @@ std::string BookReadingAdjustmentActivity::getDateLabel() const {
   return TimeUtils::formatDateParts(selectedYear, selectedMonth, selectedDay);
 }
 
-const char* BookReadingAdjustmentActivity::getDurationLabel() const {
-  static char label[12];
-  snprintf(label, sizeof(label), "%d min", DURATION_MINUTES[selectedDuration]);
-  return label;
-}
-
 bool BookReadingAdjustmentActivity::applyAdjustment() {
   const uint32_t dayOrdinal = selectedDayOrdinal;
   const int32_t deltaMs = getSelectedDeltaMs();
@@ -185,14 +205,50 @@ bool BookReadingAdjustmentActivity::applyAdjustment() {
   return true;
 }
 
+void BookReadingAdjustmentActivity::screenTrampoline(UiScreen& screen, void* user) {
+  static_cast<BookReadingAdjustmentActivity*>(user)->buildScreen(screen);
+}
+
+void BookReadingAdjustmentActivity::onFieldEvent(const fui::ActionEvent& event, void* user) {
+  auto* self = static_cast<BookReadingAdjustmentActivity*>(user);
+  self->selectField(event.value);
+  if (event.value == FIELD_DATE) {
+    // Same as Confirm on the Date field: open the date picker.
+    self->app.clearTapFlash();
+    self->openDateSelection();
+  }
+}
+
+void BookReadingAdjustmentActivity::onStepEvent(const fui::ActionEvent& event, void* user) {
+  auto* self = static_cast<BookReadingAdjustmentActivity*>(user);
+  self->selectedField = std::clamp(static_cast<int>(event.value), 0, FIELD_COUNT - 1);
+  self->adjustValue(event.value, event.action == ACTION_INC ? 1 : -1);
+}
+
+void BookReadingAdjustmentActivity::onCancelEvent(const fui::ActionEvent&, void* user) {
+  auto* self = static_cast<BookReadingAdjustmentActivity*>(user);
+  self->app.clearTapFlash();  // the tap leaves this screen
+  self->finish();
+}
+
+void BookReadingAdjustmentActivity::onOkEvent(const fui::ActionEvent&, void* user) {
+  auto* self = static_cast<BookReadingAdjustmentActivity*>(user);
+  self->app.clearTapFlash();
+  self->applyAdjustment();
+}
+
 void BookReadingAdjustmentActivity::loop() {
+  const auto route = routeTouch(mappedInput);
+  if (route.routed && app.invalidated()) requestUpdate();
+  if (route) return;
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finish();
     return;
   }
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-    if (selectedField == 1) {
+    if (selectedField == FIELD_DATE) {
       openDateSelection();
       return;
     }
@@ -200,65 +256,55 @@ void BookReadingAdjustmentActivity::loop() {
     return;
   }
 
-  buttonNavigator.onRelease({MappedInputManager::Button::Down}, [this] {
-    selectedField = ButtonNavigator::nextIndex(selectedField, FIELD_COUNT);
-    lastApplyFailed = false;
-    requestUpdate();
-  });
-
-  buttonNavigator.onRelease({MappedInputManager::Button::Up}, [this] {
-    selectedField = ButtonNavigator::previousIndex(selectedField, FIELD_COUNT);
-    lastApplyFailed = false;
-    requestUpdate();
-  });
-
-  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}, [this] { adjustSelectedValue(-1); });
-  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [this] { adjustSelectedValue(1); });
+  buttonNavigator.onRelease({MappedInputManager::Button::Down},
+                            [this] { selectField(ButtonNavigator::nextIndex(selectedField, FIELD_COUNT)); });
+  buttonNavigator.onRelease({MappedInputManager::Button::Up},
+                            [this] { selectField(ButtonNavigator::previousIndex(selectedField, FIELD_COUNT)); });
+  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}, [this] { adjustValue(selectedField, -1); });
+  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [this] { adjustValue(selectedField, 1); });
 }
 
-void BookReadingAdjustmentActivity::render(RenderLock&&) {
-  renderer.clearScreen();
+void BookReadingAdjustmentActivity::buildScreen(UiScreen& screen) {
+  dateLabel = getDateLabel();
+  previewInfo = getAdjustmentPreviewInfo();
+  snprintf(durationText, sizeof(durationText), "%d min", DURATION_MINUTES[selectedDuration]);
 
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int sidePadding = metrics.contentSidePadding;
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int listHeight = metrics.listWithSubtitleRowHeight * FIELD_COUNT;
-  const std::string subtitle =
-      renderer.truncatedText(UI_10_FONT_ID, bookTitle.c_str(), pageWidth - metrics.contentSidePadding * 2);
+  const StepperField fields[FIELD_COUNT] = {
+      {tr(STR_ACTION), getOperationLabel(), nullptr},
+      {tr(STR_DATE), dateLabel.c_str(), "00/00/0000"},
+      {tr(STR_AMOUNT), durationText, "00 min"},
+  };
+  StepperFieldsSpec spec;
+  spec.fields = fields;
+  spec.count = FIELD_COUNT;
+  spec.selectedField = selectedField;
+  spec.fieldAction = ACTION_FIELD;
+  spec.decrementAction = ACTION_DEC;
+  spec.incrementAction = ACTION_INC;
+  spec.cancelAction = ACTION_CANCEL;
+  spec.okAction = ACTION_OK;
+  buildStepperFieldsScreen(screen, renderer, mappedInput, spec);
 
-  HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_ADJUST_READING_TIME), subtitle.c_str());
-
-  GUI.drawList(
-      renderer, Rect{0, contentTop, pageWidth, listHeight}, FIELD_COUNT, selectedField,
-      [](int index) {
-        if (index == 0) return std::string(tr(STR_ACTION));
-        if (index == 1) return std::string(tr(STR_DATE));
-        return std::string(tr(STR_AMOUNT));
-      },
-      [this](int index) {
-        if (index == 0) return std::string(getOperationLabel());
-        if (index == 1) return getDateLabel();
-        return std::string(getDurationLabel());
-      },
-      [](int index) { return index == 0 ? UIIcon::Settings : UIIcon::Recent; }, nullptr, false);
-
-  const int infoTop = contentTop + listHeight + metrics.verticalSpacing;
-  const int infoWidth = pageWidth - sidePadding * 2;
-  std::string info = getAdjustmentPreviewInfo();
-  std::string hint = selectedField == 1 ? tr(STR_SELECT_OPENS_DATE_PICKER) : tr(STR_SELECT_APPLIES_CORRECTION);
+  addStepperHint(screen, previewInfo.c_str());
+  const char* hint = selectedField == FIELD_DATE ? tr(STR_SELECT_OPENS_DATE_PICKER) : tr(STR_SELECT_APPLIES_CORRECTION);
   if (lastApplyFailed) {
     hint = tr(STR_COULD_NOT_APPLY_CORRECTION);
   } else if (!canApplySelectedAdjustment()) {
     hint = tr(STR_CHOOSE_ADD_OR_REDUCE_AMOUNT);
   }
-  const std::string shortInfo = renderer.truncatedText(UI_10_FONT_ID, info.c_str(), infoWidth);
-  renderer.drawText(UI_10_FONT_ID, sidePadding, infoTop, shortInfo.c_str());
-  const std::string shortHint = renderer.truncatedText(UI_10_FONT_ID, hint.c_str(), infoWidth);
-  renderer.drawText(UI_10_FONT_ID, sidePadding, infoTop + renderer.getLineHeight(UI_10_FONT_ID), shortHint.c_str());
+  addStepperHint(screen, hint);
+}
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), selectedField == 1 ? tr(STR_SELECT) : tr(STR_CONFIRM),
-                                            tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+void BookReadingAdjustmentActivity::render(RenderLock&&) {
+  renderer.clearScreen();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const std::string subtitle = renderer.truncatedText(UI_10_FONT_ID, bookTitle.c_str(),
+                                                      renderer.getScreenWidth() - metrics.contentSidePadding * 2);
+  HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_ADJUST_READING_TIME), subtitle.c_str());
+  renderUi();
+  const auto labels =
+      mappedInput.mapLabels(tr(STR_BACK), selectedField == FIELD_DATE ? tr(STR_SELECT) : tr(STR_CONFIRM),
+                            tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer();
 }

@@ -99,6 +99,20 @@ void IfFoundActivity::loop() {
     return;
   }
 
+  // Touch: vertical swipes page through the body text (up = forward).
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
+    const int maxScrollOffset = getMaxScrollOffset();
+    const int page = getVisibleBodyLineCount();
+    const int next =
+        std::clamp(scrollOffset + (swipe == MappedInputManager::SwipeDir::Up ? page : -page), 0, maxScrollOffset);
+    if (next != scrollOffset) {
+      scrollOffset = next;
+      requestUpdate();
+    }
+    return;
+  }
+
   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right, MappedInputManager::Button::Down}, [this] {
     const int maxScrollOffset = getMaxScrollOffset();
     if (maxScrollOffset <= 0) {

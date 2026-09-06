@@ -122,15 +122,13 @@ void DictionaryDefinitionActivity::wrapText() {
 
   auto continuationPrefixFor = [](const std::string& line, const std::string& prefix) {
     size_t pos = prefix.size();
-    if (pos + 1 < line.size() && (line[pos] == '-' || line[pos] == '*' || line[pos] == '+') &&
-        line[pos + 1] == ' ') {
+    if (pos + 1 < line.size() && (line[pos] == '-' || line[pos] == '*' || line[pos] == '+') && line[pos + 1] == ' ') {
       return prefix + "  ";
     }
 
     const size_t numberStart = pos;
     while (pos < line.size() && std::isdigit(static_cast<unsigned char>(line[pos]))) ++pos;
-    if (pos > numberStart && pos + 1 < line.size() && (line[pos] == '.' || line[pos] == ')') &&
-        line[pos + 1] == ' ') {
+    if (pos > numberStart && pos + 1 < line.size() && (line[pos] == '.' || line[pos] == ')') && line[pos + 1] == ' ') {
       return prefix + std::string(pos + 2 - prefix.size(), ' ');
     }
     return prefix;
@@ -238,10 +236,38 @@ void DictionaryDefinitionActivity::wrapText() {
 }
 
 void DictionaryDefinitionActivity::loop() {
-  const bool prevPage = mappedInput.wasReleased(MappedInputManager::Button::PageBack) ||
-                        mappedInput.wasReleased(MappedInputManager::Button::Left);
-  const bool nextPage = mappedInput.wasReleased(MappedInputManager::Button::PageForward) ||
-                        mappedInput.wasReleased(MappedInputManager::Button::Right);
+  bool prevPage = mappedInput.wasReleased(MappedInputManager::Button::PageBack) ||
+                  mappedInput.wasReleased(MappedInputManager::Button::Left);
+  bool nextPage = mappedInput.wasReleased(MappedInputManager::Button::PageForward) ||
+                  mappedInput.wasReleased(MappedInputManager::Button::Right);
+
+  // Touch (upstream): same zones as the reader page turns inside the overlay --
+  // left third = previous page, the rest = next. A tap outside the overlay box
+  // closes it like Back; the left-edge back swipe cancels as well.
+  int tx = 0;
+  int ty = 0;
+  if (mappedInput.wasScreenTapped(tx, ty)) {
+    const Rect rect = overlayRect();
+    const bool insideOverlay = tx >= rect.x && tx < rect.x + rect.width && ty >= rect.y && ty < rect.y + rect.height;
+    if (!insideOverlay) {
+      ActivityResult result;
+      result.isCancelled = true;
+      setResult(std::move(result));
+      finish();
+      return;
+    }
+    if (tx < rect.x + rect.width / 3) {
+      prevPage = true;
+    } else {
+      nextPage = true;
+    }
+  } else if (mappedInput.wasBackGesture()) {
+    ActivityResult result;
+    result.isCancelled = true;
+    setResult(std::move(result));
+    finish();
+    return;
+  }
 
   if (prevPage && currentPage > 0) {
     --currentPage;
@@ -304,8 +330,7 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
   const int startLine = currentPage * linesPerPage;
   prewarmVisibleDefinitionText();
   for (int i = 0; i < linesPerPage && startLine + i < static_cast<int>(wrappedLines.size()); ++i) {
-    renderer.drawText(definitionFontId, rect.x + padding, bodyY + i * lineHeight,
-                      wrappedLines[startLine + i].c_str());
+    renderer.drawText(definitionFontId, rect.x + padding, bodyY + i * lineHeight, wrappedLines[startLine + i].c_str());
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DONE), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));

@@ -38,8 +38,11 @@ void KOReaderSyncSessionState::clear() {
   resultPage = 0;
   resultParagraphIndex = 0;
   resultHasParagraphIndex = false;
-  resultListItemIndex = 0;
-  resultHasListItemIndex = false;
+  resultLiIndex = 0;
+  resultHasLiIndex = false;
+  resultVisibleTextOffset = 0;
+  resultHasVisibleTextOffset = false;
+  resultXpathAnchorId.clear();
   exitToHomeAfterSync = false;
   autoPullEpubPath.clear();
 }
@@ -51,19 +54,39 @@ void PendingBookmarkJumpState::clear() {
   pageNumber = 0;
 }
 
-bool CrossPointState::isRecentSleep(const uint16_t idx, const uint8_t checkCount) const {
-  const uint8_t effectiveCount = std::min(checkCount, recentSleepFill);
+namespace {
+bool isRecentIndex(const uint16_t* recentImages, const uint8_t recentPos, const uint8_t recentFill, const uint16_t idx,
+                   const uint8_t checkCount) {
+  const uint8_t effectiveCount = std::min(checkCount, recentFill);
   for (uint8_t i = 0; i < effectiveCount; i++) {
-    const uint8_t slot = (recentSleepPos + SLEEP_RECENT_COUNT - 1 - i) % SLEEP_RECENT_COUNT;
-    if (recentSleepImages[slot] == idx) return true;
+    const uint8_t slot =
+        (recentPos + CrossPointState::SLEEP_RECENT_COUNT - 1 - i) % CrossPointState::SLEEP_RECENT_COUNT;
+    if (recentImages[slot] == idx) return true;
   }
   return false;
 }
 
+void pushRecentIndex(uint16_t* recentImages, uint8_t& recentPos, uint8_t& recentFill, const uint16_t idx) {
+  recentImages[recentPos] = idx;
+  recentPos = (recentPos + 1) % CrossPointState::SLEEP_RECENT_COUNT;
+  if (recentFill < CrossPointState::SLEEP_RECENT_COUNT) recentFill++;
+}
+}  // namespace
+
+bool CrossPointState::isRecentSleep(const uint16_t idx, const uint8_t checkCount) const {
+  return isRecentIndex(recentSleepImages, recentSleepPos, recentSleepFill, idx, checkCount);
+}
+
+bool CrossPointState::isRecentOverlaySleep(const uint16_t idx, const uint8_t checkCount) const {
+  return isRecentIndex(recentOverlaySleepImages, recentOverlaySleepPos, recentOverlaySleepFill, idx, checkCount);
+}
+
 void CrossPointState::pushRecentSleep(const uint16_t idx) {
-  recentSleepImages[recentSleepPos] = idx;
-  recentSleepPos = (recentSleepPos + 1) % SLEEP_RECENT_COUNT;
-  if (recentSleepFill < SLEEP_RECENT_COUNT) recentSleepFill++;
+  pushRecentIndex(recentSleepImages, recentSleepPos, recentSleepFill, idx);
+}
+
+void CrossPointState::pushRecentOverlaySleep(const uint16_t idx) {
+  pushRecentIndex(recentOverlaySleepImages, recentOverlaySleepPos, recentOverlaySleepFill, idx);
 }
 
 uint16_t CrossPointState::getMostRecentSleepIndex() const {
@@ -144,7 +167,7 @@ bool CrossPointState::shouldShowSyncDayReminder(const uint8_t reminderThreshold)
 }
 
 bool CrossPointState::loadFromBinaryFile() {
-  FsFile inputFile;
+  HalFile inputFile;
   if (!Storage.openFileForRead("CPS", STATE_FILE_BIN, inputFile)) {
     return false;
   }

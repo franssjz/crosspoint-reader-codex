@@ -7,9 +7,11 @@
 #include <string>
 
 #include "CrossPointSettings.h"
+#include "MappedInputManager.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
 #include "util/ShortcutUiMetadata.h"
+
+namespace fui = freeink::ui;
 
 namespace {
 const char* getLocationLabel(const ShortcutDefinition& definition) {
@@ -32,88 +34,81 @@ void ShortcutLocationActivity::reloadEntries() {
   });
 
   if (entries.empty()) {
-    selectedIndex = 0;
+    nav.selected = 0;
   } else {
-    selectedIndex = std::clamp(selectedIndex, 0, static_cast<int>(entries.size()) - 1);
+    nav.selected = std::clamp(nav.selected, 0, static_cast<int>(entries.size()) - 1);
   }
+  rebuildRowItems();
 }
 
-void ShortcutLocationActivity::toggleSelectedEntry() {
-  if (selectedIndex < 0 || selectedIndex >= static_cast<int>(entries.size())) {
-    return;
+// Derives the row cache from entries. Called when entries changes (onEnter),
+// never from buildScreen().
+void ShortcutLocationActivity::rebuildRowItems() {
+  rowLabels.clear();
+  rowItems.clear();
+  rowLabels.reserve(entries.size());
+  rowItems.reserve(entries.size());
+  for (const auto* definition : entries) {
+    rowLabels.push_back(ShortcutUiMetadata::getName(*definition));
   }
-
-  auto* definition = entries[selectedIndex];
-  auto& location = SETTINGS.*(definition->locationPtr);
-  location = location == CrossPointSettings::SHORTCUT_HOME ? CrossPointSettings::SHORTCUT_APPS
-                                                           : CrossPointSettings::SHORTCUT_HOME;
-  requestUpdate();
+  for (size_t i = 0; i < entries.size(); ++i) {
+    fui::ListItem item;
+    item.label = rowLabels[i].c_str();
+    item.value = getLocationLabel(*entries[i]);
+    item.actionValue = static_cast<int16_t>(i);
+    rowItems.push_back(item);
+  }
 }
 
 void ShortcutLocationActivity::onEnter() {
-  Activity::onEnter();
+  UiListActivity::onEnter();
   reloadEntries();
-  waitForConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
+}
+
+const char* ShortcutLocationActivity::headerTitle() const { return tr(STR_SHORTCUT_LOCATION); }
+
+void ShortcutLocationActivity::activateIndex(const int index) {
+  if (index < 0 || index >= static_cast<int>(entries.size())) {
+    return;
+  }
+
+  auto* definition = entries[static_cast<size_t>(index)];
+  {
+    // The render task reads rowItems mid-build; swap the value under the lock.
+    RenderLock lock(*this);
+    auto& location = SETTINGS.*(definition->locationPtr);
+    location = location == CrossPointSettings::SHORTCUT_HOME ? CrossPointSettings::SHORTCUT_APPS
+                                                             : CrossPointSettings::SHORTCUT_HOME;
+    rowItems[static_cast<size_t>(index)].value = getLocationLabel(*definition);
+  }
   requestUpdate();
 }
 
-void ShortcutLocationActivity::loop() {
-  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    finish();
-    return;
-  }
-
-  if (waitForConfirmRelease) {
-    if (!mappedInput.isPressed(MappedInputManager::Button::Confirm)) {
-      waitForConfirmRelease = false;
-    }
-    return;
-  }
-
-  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-    toggleSelectedEntry();
-    return;
-  }
-
-  buttonNavigator.onNextRelease([this] {
-    if (entries.empty()) {
-      return;
-    }
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, static_cast<int>(entries.size()));
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousRelease([this] {
-    if (entries.empty()) {
-      return;
-    }
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, static_cast<int>(entries.size()));
-    requestUpdate();
-  });
-}
-
-void ShortcutLocationActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-
+void ShortcutLocationActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_SHORTCUT_LOCATION));
-
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  // Content below the GUI.drawHeader band, above the button hints.
+  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
   if (entries.empty()) {
-    renderer.drawCenteredText(UI_10_FONT_ID, contentTop + 24, tr(STR_NO_ENTRIES));
-  } else {
-    GUI.drawList(renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(entries.size()), selectedIndex,
-                 [this](const int index) { return ShortcutUiMetadata::getName(*entries[index]); }, nullptr, nullptr,
-                 [this](const int index) { return std::string(getLocationLabel(*entries[index])); }, true);
+    screen.centeredText(tr(STR_NO_ENTRIES), screen.theme().bodyText);
+    return;
   }
 
+  fui::ListProps props;
+  props.items = rowItems.data();
+  props.count = static_cast<uint16_t>(rowItems.size());
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
+  props.valueInset = 8;
+  props.labelText = screen.theme().smallText;
+  props.labelText.maxLines = 2;
+  syncListViewport(screen, props);
+  screen.list(props);
+}
+
+void ShortcutLocationActivity::drawFooter() {
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_TOGGLE), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-
-  renderer.displayBuffer();
 }

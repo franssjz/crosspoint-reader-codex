@@ -32,6 +32,10 @@ struct PercentResult {
   int percent = 0;
 };
 
+struct IntervalResult {
+  uint32_t value = 0;
+};
+
 struct PageResult {
   uint32_t page = 0;
 };
@@ -56,6 +60,19 @@ struct SyncResult {
   bool hasParagraphIndex = false;
   uint16_t listItemIndex = 0;
   bool hasListItemIndex = false;
+};
+
+struct ProgressChangeResult {
+  int spineIndex = 0;
+  int page = 0;
+  int totalPages = 0;
+  std::string xpath;
+  float percentage = 0.0f;
+  bool hasSavedProgress = false;
+  // Exact visible-codepoint offset within spineIndex, when the source (a bookmark) has one.
+  // Preferred over xpath/percentage on resolution: it is immune to re-pagination.
+  bool hasVisibleTextOffset = false;
+  uint32_t visibleTextOffset = 0;
 };
 
 enum class NetworkMode;
@@ -92,9 +109,9 @@ struct FlashcardSessionResult {
 };
 
 using ResultVariant =
-    std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult, PageResult,
-                 BookmarkResult, HighlightResult, SyncResult, NetworkModeResult, FootnoteResult, FilePathResult,
-                 FlashcardSessionResult>;
+    std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult, IntervalResult,
+                 PageResult, BookmarkResult, HighlightResult, SyncResult, ProgressChangeResult, NetworkModeResult,
+                 FootnoteResult, FilePathResult, FlashcardSessionResult>;
 
 struct ActivityResult {
   bool isCancelled = false;

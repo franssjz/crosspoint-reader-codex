@@ -50,7 +50,5 @@ bool loadAchievements(AchievementsStore& store, const char* json);
 bool loadAchievementsFromFile(AchievementsStore& store, const char* path);
 
 // OpdsServerStore
-bool saveOpds(const OpdsServerStore& store, const char* path);
-bool loadOpds(OpdsServerStore& store, const char* json, bool* needsResave = nullptr);
 
 }  // namespace JsonSettingsIO

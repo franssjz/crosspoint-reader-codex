@@ -32,7 +32,7 @@ class CrossPointWebServer {
 
   // Used by POST upload handler
   struct UploadState {
-    FsFile file;
+    HalFile file;
     String fileName;
     String path = "/";
     size_t size = 0;
@@ -108,6 +108,11 @@ class CrossPointWebServer {
   void handleGetSettings() const;
   void handlePostSettings();
 
+  // Wi-Fi credentials handlers
+  void handleGetWifiNetworks() const;
+  void handlePostWifiNetwork();
+  void handleDeleteWifiNetwork();
+
   // Font management handlers
   void handleFontsPage() const;
   void handleFontList() const;
@@ -122,7 +127,7 @@ class CrossPointWebServer {
 
   // Font upload state
   struct FontUploadState {
-    FsFile file;
+    HalFile file;
     std::string familyName;
     std::string filePath;
     bool valid = false;

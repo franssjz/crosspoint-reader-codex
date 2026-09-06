@@ -11,6 +11,7 @@
 # Fields:
 #   name:        Output family name (used in filenames and on-device UI)
 #   description: Human-readable description (shown in download UI and manifest)
+#   scripts:     Browser groups this family appears under (declared in scriptGroups)
 #   intervals:   Comma-separated Unicode interval presets for fontconvert_sdcard.py
 #   sizes:       Point sizes to generate
 #   force_autohint: (optional) Force FreeType auto-hinter instead of native hinting
@@ -19,9 +20,24 @@
 #                  path: relative to lib/EpdFont (for committed fonts)
 #                  url:  download URL (for fonts not in the repo)
 
+scriptGroups:
+  - {tag: latin, label: Latin}
+  - {tag: cyrillic, label: Cyrillic}
+  - {tag: greek, label: Greek}
+  - {tag: hebrew, label: Hebrew}
+  - {tag: arabic, label: Arabic}
+  - {tag: georgian, label: Georgian}
+  - {tag: armenian, label: Armenian}
+  - {tag: ethiopic, label: Ethiopic}
+  - {tag: cjk, label: CJK}
+  - {tag: hangul, label: Korean}
+  - {tag: cherokee, label: Cherokee}
+  - {tag: tifinagh, label: Tifinagh}
+
 families:
   - name: ChareInk
     description: "E-reader tuned serif based on Charis SIL (Latin, Greek, Cyrillic)"
+    scripts: [latin, cyrillic, greek]
     intervals: latin-ext,greek,cyrillic,ipa-chars
     sizes: [12, 14, 16, 18]
     styles:
@@ -32,6 +48,7 @@ families:
 
   - name: Lexend
     description: "Highly legible sans-serif reader font (Latin)"
+    scripts: [latin]
     intervals: latin-ext,ipa-chars
     sizes: [10, 12, 14, 16, 18]
     darken_aa: false

@@ -42,10 +42,29 @@ echo "#define NOTOSANS_12_FONT_ID ($(font_id ./notosans_12_regular.h ./notosans_
 echo "#define NOTOSANS_14_FONT_ID ($(font_id ./notosans_14_regular.h ./notosans_14_bold.h ./notosans_14_bolditalic.h ./notosans_14_italic.h))"
 echo "#define NOTOSANS_16_FONT_ID ($(font_id ./notosans_16_regular.h ./notosans_16_bold.h ./notosans_16_bolditalic.h ./notosans_16_italic.h))"
 echo "#define NOTOSANS_18_FONT_ID ($(font_id ./notosans_18_regular.h ./notosans_18_bold.h ./notosans_18_bolditalic.h ./notosans_18_italic.h))"
-echo "#define OPENDYSLEXIC_8_FONT_ID ($(font_id ./opendyslexic_8_regular.h ./opendyslexic_8_bold.h ./opendyslexic_8_bolditalic.h ./opendyslexic_8_italic.h))"
-echo "#define OPENDYSLEXIC_10_FONT_ID ($(font_id ./opendyslexic_10_regular.h ./opendyslexic_10_bold.h ./opendyslexic_10_bolditalic.h ./opendyslexic_10_italic.h))"
-echo "#define OPENDYSLEXIC_12_FONT_ID ($(font_id ./opendyslexic_12_regular.h ./opendyslexic_12_bold.h ./opendyslexic_12_bolditalic.h ./opendyslexic_12_italic.h))"
-echo "#define OPENDYSLEXIC_14_FONT_ID ($(font_id ./opendyslexic_14_regular.h ./opendyslexic_14_bold.h ./opendyslexic_14_bolditalic.h ./opendyslexic_14_italic.h))"
 echo "#define UI_10_FONT_ID ($(font_id ./ubuntu_10_regular.h ./ubuntu_10_bold.h))"
 echo "#define UI_12_FONT_ID ($(font_id ./ubuntu_12_regular.h ./ubuntu_12_bold.h))"
 echo "#define SMALL_FONT_ID ($(font_id ./notosans_8_regular.h))"
+
+FONT_ID_NAMES=(
+  BOOKERLY_10_FONT_ID
+  BOOKERLY_12_FONT_ID
+  BOOKERLY_14_FONT_ID
+  BOOKERLY_16_FONT_ID
+  BOOKERLY_18_FONT_ID
+  NOTOSANS_10_FONT_ID
+  NOTOSANS_12_FONT_ID
+  NOTOSANS_14_FONT_ID
+  NOTOSANS_16_FONT_ID
+  NOTOSANS_18_FONT_ID
+  UI_10_FONT_ID
+  UI_12_FONT_ID
+  SMALL_FONT_ID
+)
+
+echo ""
+echo "// Font ID 0 is reserved as the \"not found\" sentinel."
+echo "// Guard against any hash accidentally producing 0."
+for name in "${FONT_ID_NAMES[@]}"; do
+  echo "static_assert(${name} != 0, \"Font ID collision with sentinel\");"
+done

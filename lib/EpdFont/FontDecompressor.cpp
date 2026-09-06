@@ -43,6 +43,16 @@ void FontDecompressor::freeHotGroup() {
   hotGlyphBufCapacity = 0;
 }
 
+bool FontDecompressor::ensureCapacity(uint8_t*& buf, uint32_t& capacity, uint32_t needed) {
+  if (capacity >= needed) return true;
+  // Grow-only, free-then-malloc: every caller fully rewrites the buffer after a grow, so the
+  // old contents are dead -- freeing first gives the allocator its best shot on a tight heap.
+  free(buf);
+  buf = static_cast<uint8_t*>(malloc(needed));  // owned by FontDecompressor, freed in freeHotGroup()
+  capacity = buf ? needed : 0;
+  return buf != nullptr;
+}
+
 uint16_t FontDecompressor::getGroupIndex(const EpdFontData* fontData, uint32_t glyphIndex) {
   // O(1) path for frequency-grouped fonts with glyphToGroup mapping
   if (fontData->glyphToGroup != nullptr) {
@@ -172,32 +182,28 @@ const uint8_t* FontDecompressor::getBitmap(const EpdFontData* fontData, const Ep
   }
 
   // Check if hot group already has this group decompressed — if not, decompress it
-  if (!(hotGroup && hotGroupFont == fontData && hotGroupIndex == groupIndex)) {
+  if (!(hotGroup != nullptr && hotGroupFont == fontData && hotGroupIndex == groupIndex)) {
     stats.cacheMisses++;
     const EpdFontGroup& group = fontData->groups[groupIndex];
 
+    // ensureCapacity may free the buffer, so the cached-group identity dies with it either way.
     hotGroupFont = nullptr;
     hotGroupIndex = UINT16_MAX;
-    if (group.uncompressedSize > hotGroupCapacity) {
-      free(hotGroup);
-      hotGroup = static_cast<uint8_t*>(malloc(group.uncompressedSize));
-      hotGroupCapacity = hotGroup ? group.uncompressedSize : 0;
-      if (!hotGroup && pageSlotCount > 0) {
-        LOG_DBG("FDC", "Releasing page font cache to retry %u-byte hot group", group.uncompressedSize);
-        freePageBuffer();
-        hotGroup = static_cast<uint8_t*>(malloc(group.uncompressedSize));
-        hotGroupCapacity = hotGroup ? group.uncompressedSize : 0;
-      }
-      if (!hotGroup) {
-        LOG_ERR("FDC", "Failed to allocate %u bytes for hot group %u (free=%u maxAlloc=%u)", group.uncompressedSize,
-                groupIndex, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-        stats.getBitmapTimeUs += micros() - tStart;
-        return nullptr;
-      }
+    bool hotGroupOk = ensureCapacity(hotGroup, hotGroupCapacity, group.uncompressedSize);
+    if (!hotGroupOk && pageSlotCount > 0) {
+      // Fork: the page cache is rebuildable; release it and retry before giving up on the glyph.
+      LOG_DBG("FDC", "Releasing page font cache to retry %u-byte hot group", group.uncompressedSize);
+      freePageBuffer();
+      hotGroupOk = ensureCapacity(hotGroup, hotGroupCapacity, group.uncompressedSize);
+    }
+    if (!hotGroupOk) {
+      LOG_ERR("FDC", "Failed to allocate %u bytes for hot group %u (free=%u maxAlloc=%u)", group.uncompressedSize,
+              groupIndex, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+      stats.getBitmapTimeUs += micros() - tStart;
+      return nullptr;
     }
 
     if (!decompressGroup(fontData, groupIndex, hotGroup, group.uncompressedSize)) {
-      freeHotGroup();
       stats.getBitmapTimeUs += micros() - tStart;
       return nullptr;
     }
@@ -210,16 +216,10 @@ const uint8_t* FontDecompressor::getBitmap(const EpdFontData* fontData, const Ep
   }
 
   // Compact just the requested glyph from byte-aligned data into scratch buffer
-  if (glyph->dataLength > hotGlyphBufCapacity) {
-    auto* resized = static_cast<uint8_t*>(realloc(hotGlyphBuf, glyph->dataLength));
-    if (!resized) {
-      LOG_ERR("FDC", "Failed to allocate %u-byte hot glyph buffer (free=%u maxAlloc=%u)", glyph->dataLength,
-              ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-      stats.getBitmapTimeUs += micros() - tStart;
-      return nullptr;
-    }
-    hotGlyphBuf = resized;
-    hotGlyphBufCapacity = glyph->dataLength;
+  if (!ensureCapacity(hotGlyphBuf, hotGlyphBufCapacity, glyph->dataLength)) {
+    LOG_ERR("FDC", "Failed to allocate %u bytes for glyph scratch", (unsigned)glyph->dataLength);
+    stats.getBitmapTimeUs += micros() - tStart;
+    return nullptr;
   }
 
   uint32_t alignedOff = getAlignedOffset(fontData, groupIndex, glyphIndex);

@@ -15,4 +15,8 @@ class EpdFontFamily {
     SUB = 32,
     RUBY_CONTINUE = 64,
   };
+  static constexpr uint8_t TEXT_DECORATION_MASK = UNDERLINE | STRIKETHROUGH;
+  static constexpr bool hasTextDecoration(const Style style) {
+    return (static_cast<uint8_t>(style) & TEXT_DECORATION_MASK) != 0;
+  }
 };

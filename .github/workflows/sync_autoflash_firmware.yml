@@ -1,7 +1,18 @@
 name: Sync Auto Flash Firmware
 
+# Mirrors the latest stable GitHub release into docs/firmware/ for the browser
+# flasher: `<tag>.bin` -> firmware.bin (ESP32-C3 X4/X3, required) and
+# `<tag>-x4pro.bin` -> firmware-x4pro.bin (ESP32-S3 X4 Pro, optional until a
+# release ships it). The manifest, flash.html fallback block, README and site
+# strings are rewritten together so they always describe the same release.
+
 on:
   workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch that GitHub Pages deploys from (receives the sync commit)
+        required: false
+        default: master
 
 permissions:
   contents: write
@@ -9,6 +20,8 @@ permissions:
 jobs:
   sync-autoflash-firmware:
     runs-on: ubuntu-latest
+    env:
+      PAGES_BRANCH: ${{ github.event.inputs.branch || 'master' }}
     steps:
       - name: Checkout repository
         env:
@@ -17,11 +30,11 @@ jobs:
           set -euo pipefail
           git init .
           git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --depth=1 origin master
+          git fetch --depth=1 origin "${PAGES_BRANCH}"
           git checkout --force FETCH_HEAD
-          git switch -C master
+          git switch -C "${PAGES_BRANCH}"
 
-      - name: Sync firmware copy from latest stable release
+      - name: Sync firmware copies from latest stable release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/sync_autoflash_firmware.py --repo "${GITHUB_REPOSITORY}"
@@ -29,13 +42,19 @@ jobs:
       - name: Commit synchronized auto-flash firmware
         run: |
           set -euo pipefail
-          if git diff --quiet; then
+          # Stage docs/firmware as a directory so a newly added firmware-x4pro.bin
+          # (or its removal when a release lacks the X4 Pro asset) is captured.
+          git add -- README.md docs/assets/site.js docs/index.html docs/flash.html docs/firmware
+          if git diff --cached --quiet; then
             echo "Auto-flash firmware is already synchronized."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md docs/assets/site.js docs/index.html docs/flash.html docs/firmware/firmware.bin docs/firmware/manifest.json
-          git commit -m "docs: sync auto-flash firmware to ${AUTOFLASH_VERSION}"
-          git push origin HEAD:master
+          if [ "${AUTOFLASH_X4PRO:-0}" = "1" ]; then
+            git commit -m "docs: sync auto-flash firmware to ${AUTOFLASH_VERSION} (X4/X3 + X4 Pro)"
+          else
+            git commit -m "docs: sync auto-flash firmware to ${AUTOFLASH_VERSION}"
+          fi
+          git push origin "HEAD:${PAGES_BRANCH}"

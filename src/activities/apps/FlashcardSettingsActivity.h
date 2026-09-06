@@ -1,20 +1,32 @@
 #pragma once
 
-#include "../Activity.h"
-#include "util/ButtonNavigator.h"
+#include <string>
 
-class FlashcardSettingsActivity final : public Activity {
-  ButtonNavigator buttonNavigator;
-  int selectedIndex = 0;
+#include "activities/UiListActivity.h"
+#include "components/OptionPopup.h"
 
-  int getSettingCount() const { return 2; }
-  void toggleSelectedSetting();
+// Flashcard study settings: two value rows (study mode, session size), each
+// activated through an OptionPopup picker.
+class FlashcardSettingsActivity final : public UiListActivity {
+  static constexpr int SETTING_COUNT = 2;
+
+  OptionPopup optionPopup;
+  std::string rowValues[SETTING_COUNT];
+  freeink::ui::ListItem rowItems[SETTING_COUNT]{};
+
+  void refreshRowValues();
+
+  int listCount() const override { return SETTING_COUNT; }
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  bool handleCustomInput() override;
+  void drawChrome() override;
+  void drawFooter() override;
 
  public:
   explicit FlashcardSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("FlashcardSettings", renderer, mappedInput) {}
+      : UiListActivity("FlashcardSettings", renderer, mappedInput) {}
 
   void onEnter() override;
-  void loop() override;
   void render(RenderLock&&) override;
 };

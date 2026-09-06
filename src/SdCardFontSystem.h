@@ -15,7 +15,7 @@ class SdCardFontSystem {
   SdCardFontSystem(const SdCardFontSystem&) = delete;
   SdCardFontSystem& operator=(const SdCardFontSystem&) = delete;
   /// Register the resolver and load a saved SD font selection. Discovery stays
-  /// deferred while the built-in font is selected.
+  /// deferred while the built-in font is selected (fork: saves boot time and heap).
   void begin(GfxRenderer& renderer);
 
   /// Ensure the correct SD font family is loaded for the current settings.
@@ -25,11 +25,12 @@ class SdCardFontSystem {
 
   /// Drop SD-font runtime state before TLS/network operations. ensureLoaded()
   /// re-discovers and reloads the configured font when normal reading resumes.
+  /// Returns true when a font family was loaded (and therefore unloaded).
   bool releaseForNetwork(GfxRenderer& renderer);
 
-  /// Resolve an SD card font ID from family name + fontSize enum.
+  /// Resolve an SD card font ID from family name + reader point size.
   /// Returns 0 if not found. Used by CrossPointSettings::getReaderFontId().
-  int resolveFontId(const char* familyName, uint8_t fontSizeEnum) const;
+  int resolveFontId(const char* familyName, uint8_t pointSize) const;
 
   /// Access the registry (e.g. for settings UI to enumerate available fonts).
   const SdCardFontRegistry& registry() const { return registry_; }
@@ -47,11 +48,24 @@ class SdCardFontSystem {
   void refreshIfDirty();
 
  private:
+  // Discover when the registry has never been loaded (deferred discovery), was
+  // marked dirty, or was released for a network operation. Returns true when a
+  // discovery ran; the optional outputs report why.
   bool refreshRegistryIfNeeded(bool* wasDirty = nullptr, bool* wasReleased = nullptr);
+
+  // Load the active SD family at the built-in UI point sizes and register each
+  // as a size-matched CJK fallback for the corresponding UI font, so CJK book
+  // titles/list rows render at the same size as the surrounding Latin UI text.
+  // No-op when no SD family is loaded. Safe to call repeatedly (sizes already
+  // loaded are reused).
   void setupUiFallbacks(GfxRenderer& renderer);
+
   SdCardFontRegistry registry_;
   SdCardFontManager manager_;
   std::atomic<bool> registryDirty_{false};
   std::atomic<bool> registryReleasedForNetwork_{false};
   std::atomic<bool> registryLoaded_{false};
 };
+
+// Global SD card font system instance (defined in main.cpp).
+extern SdCardFontSystem sdFontSystem;

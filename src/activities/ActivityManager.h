@@ -4,6 +4,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <memory>
@@ -16,6 +17,8 @@
 
 class Activity;    // forward declaration
 class RenderLock;  // forward declaration
+
+enum class HomeMenuItem { NONE, FILE_BROWSER, RECENTS, OPDS_BROWSER, FILE_TRANSFER, SETTINGS_MENU };
 
 /**
  * ActivityManager
@@ -62,7 +65,7 @@ class ActivityManager {
 
   // Whether to trigger a render after the current loop()
   // This variable must only be set by the main loop, to avoid race conditions
-  bool requestedUpdate = false;
+  std::atomic<bool> requestedUpdate{false};
   uint8_t autoUiRefreshDebt = 0;
   uint8_t deferredPreviousUiRefreshWeight = 0;
   void requestUiTransitionRefresh(uint8_t previousWeight, uint8_t nextWeight);
@@ -83,20 +86,21 @@ class ActivityManager {
 
   // goTo... functions are convenient wrapper for replaceActivity()
   void goToFileTransfer();
+  void goToUsbDrive();
   void goToSettings();
   void goToApps();
   void goToFileBrowser(std::string path = {});
   void goToRecentBooks();
   void goToBrowser();
-  void goToReader(std::string path);
   void goToKOReaderSync();
   void goToEpubBookmark(std::string path, int spineIndex, uint32_t page, bool hasVisibleTextOffset = false,
                         uint32_t visibleTextOffset = 0);
-  void goToSleep();
+  void goToReader(std::string path, bool allowFastInitialRefresh = false);
+  void goToSleep(bool fromTimeout = false);
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();
-  void goHome();
+  void goHome(HomeMenuItem initialMenuItem = HomeMenuItem::NONE, bool cleanInitialRefresh = false);
 
   // This will move current activity to stack instead of deleting it
   void pushActivity(std::unique_ptr<Activity>&& activity);
@@ -106,6 +110,7 @@ class ActivityManager {
   void popActivity();
 
   bool preventAutoSleep() const;
+  bool requiresExclusiveStorageLoop() const;
   bool isReaderActivity() const;
   bool handleForcedRefresh();
   bool skipLoopDelay() const;

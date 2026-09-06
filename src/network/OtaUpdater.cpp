@@ -1,32 +1,31 @@
 #include "OtaUpdater.h"
 
+// clang-format off
+// HttpDownloader.h pulls Arduino/SdFat, whose macros collide with lwip's
+// ip4_addr.h unless seen first. Pin this order; clang-format would otherwise sort
+// the local header last and break the build.
+#include "HttpDownloader.h"
 #include <FirmwareManifestJsonParser.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <ReleaseJsonParser.h>
+#include <esp_wifi.h>
+// clang-format on
+
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
+#include <string>
 
-#include "esp_http_client.h"
-#include "esp_wifi.h"
+#include "FirmwareBoardTag.h"
 #include "FirmwareFlasher.h"
-#include "HttpDownloader.h"
 #include "version.h"
 
 namespace {
 constexpr char firmwareManifestUrl[] = "https://franssjz.github.io/cpr-vcodex/firmware/manifest.json";
 constexpr char latestReleaseUrl[] = "https://api.github.com/repos/franssjz/cpr-vcodex/releases/latest";
 constexpr char otaCachePath[] = "/.crosspoint/ota-update.bin";
-
-/*
- * When esp_crt_bundle.h is included here, Arduino's include path can resolve
- * the wrong header. Keep the upstream streaming OTA implementation but retain
- * the explicit declaration that already worked in CPR-vCodex.
- */
-extern "C" {
-extern esp_err_t esp_crt_bundle_attach(void* conf);
-}
 
 struct ParsedVersion {
   int parts[4] = {0, 0, 0, 0};
@@ -42,8 +41,6 @@ const char* currentVersionString() {
   return CROSSPOINT_VERSION;
 #endif
 }
-
-std::string buildUserAgent() { return std::string("CrossPoint-ESP32-") + currentVersionString(); }
 
 ParsedVersion parseVersion(const char* version) {
   ParsedVersion parsedVersion;
@@ -81,74 +78,32 @@ ParsedVersion parseVersion(const char* version) {
   return parsedVersion;
 }
 
-esp_err_t http_client_set_header_cb(esp_http_client_handle_t http_client) {
-  const std::string userAgent = buildUserAgent();
-  return esp_http_client_set_header(http_client, "User-Agent", userAgent.c_str());
+// The C3 X4/X3 binary is published without a board suffix (firmware.bin and
+// <tag>.bin, matching every pre-existing release). Other boards get their own
+// asset: firmware-<board>.bin / <tag>-<board>.bin (see ReleaseJsonParser).
+bool isC3X4Board() { return board_tag::boardNameLen() == 2 && memcmp(board_tag::boardName(), "x4", 2) == 0; }
+
+void legacyAssetName(char* out, size_t outSize) {
+  if (isC3X4Board()) {
+    snprintf(out, outSize, "firmware.bin");
+    return;
+  }
+  snprintf(out, outSize, "firmware-%.*s.bin", static_cast<int>(board_tag::boardNameLen()), board_tag::boardName());
 }
 
-size_t totalBytesReceived = 0;
-
-esp_err_t manifest_event_handler(esp_http_client_event_t* event) {
-  if (event->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
-  totalBytesReceived += event->data_len;
-  LOG_DBG("OTA", "HTTP chunk: %d bytes (total: %zu)", event->data_len, totalBytesReceived);
-  auto* parser = static_cast<FirmwareManifestJsonParser*>(event->user_data);
-  parser->feed(static_cast<const char*>(event->data), event->data_len);
-  return ESP_OK;
-}
-
-esp_err_t release_event_handler(esp_http_client_event_t* event) {
-  if (event->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
-  totalBytesReceived += event->data_len;
-  LOG_DBG("OTA", "HTTP chunk: %d bytes (total: %zu)", event->data_len, totalBytesReceived);
-  auto* parser = static_cast<ReleaseJsonParser*>(event->user_data);
-  parser->feed(static_cast<const char*>(event->data), event->data_len);
-  return ESP_OK;
-}
-
-OtaUpdater::OtaUpdaterError performStreamingRequest(const char* url, esp_err_t (*eventHandler)(esp_http_client_event_t*),
-                                                    void* userData, const int bufferSize) {
-  esp_http_client_config_t client_config = {
-      .url = url,
-      .event_handler = eventHandler,
-      .buffer_size = bufferSize,
-      .buffer_size_tx = 1024,
-      .user_data = userData,
-      .skip_cert_common_name_check = true,
-      .crt_bundle_attach = esp_crt_bundle_attach,
-      .keep_alive_enable = true,
-  };
-
-  totalBytesReceived = 0;
-
-  esp_http_client_handle_t client_handle = esp_http_client_init(&client_config);
-  if (!client_handle) {
-    LOG_ERR("OTA", "HTTP Client Handle Failed");
-    return OtaUpdater::INTERNAL_UPDATE_ERROR;
-  }
-
-  const std::string userAgent = buildUserAgent();
-  esp_err_t esp_err = esp_http_client_set_header(client_handle, "User-Agent", userAgent.c_str());
-  if (esp_err != ESP_OK) {
-    LOG_ERR("OTA", "esp_http_client_set_header Failed : %s", esp_err_to_name(esp_err));
-    esp_http_client_cleanup(client_handle);
-    return OtaUpdater::INTERNAL_UPDATE_ERROR;
-  }
-
-  esp_err = esp_http_client_perform(client_handle);
-  if (esp_err != ESP_OK) {
-    LOG_ERR("OTA", "esp_http_client_perform Failed : %s", esp_err_to_name(esp_err));
-    esp_http_client_cleanup(client_handle);
-    return OtaUpdater::HTTP_ERROR;
-  }
-
-  esp_err = esp_http_client_cleanup(client_handle);
-  if (esp_err != ESP_OK) {
-    LOG_ERR("OTA", "esp_http_client_cleanup Failed : %s", esp_err_to_name(esp_err));
-    return OtaUpdater::INTERNAL_UPDATE_ERROR;
-  }
-
-  return OtaUpdater::OK;
+// Stream the response straight into a parser as it arrives. Buffering the whole
+// body in a std::string would add a growing allocation on top of the TLS
+// session's heap during the fetch; with -fno-exceptions an OOM there aborts.
+// fetchUrl handles the verified-https GET, redirects, and User-Agent.
+template <typename Parser>
+OtaUpdater::OtaUpdaterError performStreamingRequest(const char* url, Parser& parser, size_t& bytesReceived) {
+  bytesReceived = 0;
+  const bool ok = HttpDownloader::fetchUrl(url, [&parser, &bytesReceived](const uint8_t* data, size_t len) {
+    bytesReceived += len;
+    parser.feed(reinterpret_cast<const char*>(data), len);
+    return true;
+  });
+  return ok ? OtaUpdater::OK : OtaUpdater::HTTP_ERROR;
 }
 
 class WifiPowerSaveGuard {
@@ -186,6 +141,7 @@ OtaUpdater::OtaUpdaterError mapFlashError(firmware_flash::Result result) {
     case firmware_flash::Result::OOM:
       return OtaUpdater::OOM_ERROR;
     case firmware_flash::Result::BAD_CHIP:
+    case firmware_flash::Result::WRONG_BOARD:
       return OtaUpdater::WRONG_DEVICE_ERROR;
     default:
       return OtaUpdater::INTERNAL_UPDATE_ERROR;
@@ -201,46 +157,62 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   processedSize = 0;
   totalSize = 0;
 
-  FirmwareManifestJsonParser manifestParser;
-  LOG_DBG("OTA", "Checking firmware manifest (current: %s)", currentVersionString());
-  OtaUpdaterError manifestResult = performStreamingRequest(firmwareManifestUrl, manifest_event_handler, &manifestParser, 2048);
-  LOG_DBG("OTA", "Manifest response received: %zu bytes total", totalBytesReceived);
-  LOG_DBG("OTA", "Manifest parser result: manifest=%s", manifestParser.foundManifest() ? "yes" : "no");
+  size_t bytesReceived = 0;
+  OtaUpdaterError manifestResult = NO_UPDATE;
 
-  if (manifestResult == OK && manifestParser.foundManifest()) {
-    latestVersion = manifestParser.getVersion();
-    otaUrl = manifestParser.getDownloadUrl();
-    otaSize = manifestParser.getFirmwareSize();
-    totalSize = otaSize;
-    updateAvailable = true;
-    LOG_DBG("OTA", "Found update via manifest: tag=%s size=%zu", latestVersion.c_str(), otaSize);
-    LOG_DBG("OTA", "Firmware URL: %s", otaUrl.c_str());
-    return OK;
-  }
+  // The auto-flash manifest only describes the C3 X4/X3 binary, so other boards
+  // go straight to the GitHub release and its board-suffixed asset.
+  if (isC3X4Board()) {
+    FirmwareManifestJsonParser manifestParser;
+    LOG_DBG("OTA", "Checking firmware manifest (current: %s)", currentVersionString());
+    manifestResult = performStreamingRequest(firmwareManifestUrl, manifestParser, bytesReceived);
+    LOG_DBG("OTA", "Manifest response received: %zu bytes total", bytesReceived);
+    LOG_DBG("OTA", "Manifest parser result: manifest=%s", manifestParser.foundManifest() ? "yes" : "no");
 
-  if (manifestResult == OK) {
-    LOG_ERR("OTA", "Firmware manifest missing version or downloadUrl");
-    manifestResult = JSON_PARSE_ERROR;
+    if (manifestResult == OK && manifestParser.foundManifest()) {
+      latestVersion = manifestParser.getVersion();
+      otaUrl = manifestParser.getDownloadUrl();
+      otaSize = manifestParser.getFirmwareSize();
+      totalSize = otaSize;
+      updateAvailable = true;
+      LOG_DBG("OTA", "Found update via manifest: tag=%s size=%zu", latestVersion.c_str(), otaSize);
+      LOG_DBG("OTA", "Firmware URL: %s", otaUrl.c_str());
+      return OK;
+    }
+
+    if (manifestResult == OK) {
+      LOG_ERR("OTA", "Firmware manifest missing version or downloadUrl");
+      manifestResult = JSON_PARSE_ERROR;
+    }
+    LOG_DBG("OTA", "Falling back to latest GitHub release after manifest check failed: %d", manifestResult);
+  } else {
+    LOG_DBG("OTA", "Checking latest GitHub release (current: %s)", currentVersionString());
   }
 
   ReleaseJsonParser releaseParser;
-  LOG_DBG("OTA", "Falling back to latest GitHub release after manifest check failed: %d", manifestResult);
-  const OtaUpdaterError releaseResult = performStreamingRequest(latestReleaseUrl, release_event_handler, &releaseParser, 4096);
-  LOG_DBG("OTA", "Release response received: %zu bytes total", totalBytesReceived);
+  // Each board updates from its own release asset. The parser prefers the
+  // tag-named asset (<tag>.bin / <tag>-<board>.bin) and falls back to the legacy
+  // name set here; releases without a firmware asset are ignored.
+  char assetName[48];
+  legacyAssetName(assetName, sizeof(assetName));
+  releaseParser.setFirmwareAssetName(assetName);
+  const OtaUpdaterError releaseResult = performStreamingRequest(latestReleaseUrl, releaseParser, bytesReceived);
+  LOG_DBG("OTA", "Release response received: %zu bytes total", bytesReceived);
   LOG_DBG("OTA", "Release parser results: tag=%s firmware=%s", releaseParser.foundTag() ? "yes" : "no",
           releaseParser.foundFirmware() ? "yes" : "no");
 
   if (releaseResult != OK) {
-    return manifestResult != OK ? manifestResult : releaseResult;
+    LOG_ERR("OTA", "Release check fetch failed");
+    return isC3X4Board() && manifestResult != OK && manifestResult != NO_UPDATE ? manifestResult : releaseResult;
   }
 
   if (!releaseParser.foundTag()) {
-    LOG_ERR("OTA", "No tag_name in release JSON fallback");
+    LOG_ERR("OTA", "No tag_name in release JSON");
     return JSON_PARSE_ERROR;
   }
 
   if (!releaseParser.foundFirmware()) {
-    LOG_ERR("OTA", "No OTA firmware asset found in release fallback");
+    LOG_INF("OTA", "No %s asset in latest release", assetName);
     return NO_UPDATE;
   }
 
@@ -250,7 +222,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   totalSize = otaSize;
   updateAvailable = true;
 
-  LOG_DBG("OTA", "Found update via release fallback: tag=%s size=%zu", latestVersion.c_str(), otaSize);
+  LOG_DBG("OTA", "Found update via release: tag=%s size=%zu", latestVersion.c_str(), otaSize);
   LOG_DBG("OTA", "Firmware URL: %s", otaUrl.c_str());
   return OK;
 }
@@ -296,6 +268,10 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     return UPDATE_OLDER_ERROR;
   }
 
+  // The image is staged on the SD card and flashed from there (FirmwareFlasher)
+  // rather than streamed into the OTA partition: the download then only holds
+  // the TLS session, and validateImageFile() checks magic, checksum, SHA256,
+  // chip_id and the embedded board tag before a single sector is erased.
   WifiPowerSaveGuard wifiPowerSaveGuard;
   Storage.mkdir("/.crosspoint");
 
@@ -303,11 +279,12 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   setProgress(0, otaSize);
   int lastReportedPercent = -1;
   const auto downloadResult = HttpDownloader::downloadToFile(
-      otaUrl, otaCachePath,
-      [this, onProgress, ctx, &lastReportedPercent](size_t downloaded, size_t total) {
+      otaUrl, otaCachePath, [this, onProgress, ctx, &lastReportedPercent](size_t downloaded, size_t total) {
         const size_t effectiveTotal = total > 0 ? total : otaSize;
         setProgress(downloaded, effectiveTotal);
         if (effectiveTotal > 0) {
+          // Fire the callback only on whole-percent change: per-chunk updates wake
+          // the render task, whose framebuffer work contends with TLS for heap.
           const int percent =
               static_cast<int>(std::min<size_t>(100, static_cast<uint64_t>(downloaded) * 100 / effectiveTotal));
           if (percent == lastReportedPercent) {
@@ -331,6 +308,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   const auto flashResult = firmware_flash::flashFromSdPath(otaCachePath, onFlashProgress, &progressCtx);
   if (flashResult != firmware_flash::Result::OK) {
     LOG_ERR("OTA", "Firmware flash failed: %s", firmware_flash::resultName(flashResult));
+    Storage.remove(otaCachePath);
     return mapFlashError(flashResult);
   }
 

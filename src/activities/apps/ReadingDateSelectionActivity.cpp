@@ -9,18 +9,30 @@
 #include <string>
 
 #include "ReadingStatsStore.h"
+#include "StepperFieldsUi.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/HeaderDateUtils.h"
 #include "util/TimeUtils.h"
 
+namespace fui = freeink::ui;
+
 namespace {
 constexpr int FIELD_COUNT = 3;
+constexpr int FIELD_DAY = 0;
+constexpr int FIELD_MONTH = 1;
+constexpr int FIELD_YEAR = 2;
 constexpr int MIN_DAY = 1;
 constexpr int MIN_MONTH = 1;
 constexpr int MAX_MONTH = 12;
 constexpr int MIN_YEAR = 2024;
 constexpr int MAX_YEAR = 2099;
+
+constexpr fui::ActionId ACTION_FIELD = 1;
+constexpr fui::ActionId ACTION_DEC = 2;
+constexpr fui::ActionId ACTION_INC = 3;
+constexpr fui::ActionId ACTION_CANCEL = 4;
+constexpr fui::ActionId ACTION_OK = 5;
 
 bool isLeapYear(const int year) { return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0); }
 
@@ -33,12 +45,6 @@ unsigned getDaysInMonth(const int year, const unsigned month) {
     return 31;
   }
   return DAYS_PER_MONTH[month - 1];
-}
-
-std::string formatTwoDigits(const unsigned value) {
-  char buffer[4];
-  snprintf(buffer, sizeof(buffer), "%02u", value);
-  return buffer;
 }
 
 unsigned wrapValue(const unsigned value, const int delta, const unsigned minValue, const unsigned maxValue) {
@@ -76,13 +82,26 @@ void ReadingDateSelectionActivity::onEnter() {
   }
 
   selectedField = 0;
+  resetUi();
+  app.on(ACTION_FIELD, &ReadingDateSelectionActivity::onFieldEvent, this);
+  app.on(ACTION_DEC, &ReadingDateSelectionActivity::onStepEvent, this);
+  app.on(ACTION_INC, &ReadingDateSelectionActivity::onStepEvent, this);
+  app.on(ACTION_CANCEL, &ReadingDateSelectionActivity::onCancelEvent, this);
+  app.on(ACTION_OK, &ReadingDateSelectionActivity::onOkEvent, this);
+  app.setScreen(&ReadingDateSelectionActivity::screenTrampoline, this);
   requestUpdate();
 }
 
-void ReadingDateSelectionActivity::adjustSelectedField(const int delta) {
-  if (selectedField == 0) {
+void ReadingDateSelectionActivity::selectField(const int field) {
+  if (field < 0 || field >= FIELD_COUNT) return;
+  selectedField = field;
+  requestUpdate();
+}
+
+void ReadingDateSelectionActivity::adjustField(const int field, const int delta) {
+  if (field == FIELD_DAY) {
     day = wrapValue(day, delta, MIN_DAY, getDaysInMonth(year, month));
-  } else if (selectedField == 1) {
+  } else if (field == FIELD_MONTH) {
     month = wrapValue(month, delta, MIN_MONTH, MAX_MONTH);
     day = std::min(day, getDaysInMonth(year, month));
   } else {
@@ -105,12 +124,46 @@ void ReadingDateSelectionActivity::finishWithDate() {
   finish();
 }
 
+void ReadingDateSelectionActivity::cancel() {
+  ActivityResult result;
+  result.isCancelled = true;
+  setResult(std::move(result));
+  finish();
+}
+
+void ReadingDateSelectionActivity::screenTrampoline(UiScreen& screen, void* user) {
+  static_cast<ReadingDateSelectionActivity*>(user)->buildScreen(screen);
+}
+
+void ReadingDateSelectionActivity::onFieldEvent(const fui::ActionEvent& event, void* user) {
+  static_cast<ReadingDateSelectionActivity*>(user)->selectField(event.value);
+}
+
+void ReadingDateSelectionActivity::onStepEvent(const fui::ActionEvent& event, void* user) {
+  auto* self = static_cast<ReadingDateSelectionActivity*>(user);
+  self->selectedField = std::clamp(static_cast<int>(event.value), 0, FIELD_COUNT - 1);
+  self->adjustField(event.value, event.action == ACTION_INC ? 1 : -1);
+}
+
+void ReadingDateSelectionActivity::onCancelEvent(const fui::ActionEvent&, void* user) {
+  auto* self = static_cast<ReadingDateSelectionActivity*>(user);
+  self->app.clearTapFlash();  // the tap leaves this screen
+  self->cancel();
+}
+
+void ReadingDateSelectionActivity::onOkEvent(const fui::ActionEvent&, void* user) {
+  auto* self = static_cast<ReadingDateSelectionActivity*>(user);
+  self->app.clearTapFlash();
+  self->finishWithDate();
+}
+
 void ReadingDateSelectionActivity::loop() {
+  const auto route = routeTouch(mappedInput);
+  if (route.routed && app.invalidated()) requestUpdate();
+  if (route) return;
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    ActivityResult result;
-    result.isCancelled = true;
-    setResult(std::move(result));
-    finish();
+    cancel();
     return;
   }
 
@@ -119,50 +172,42 @@ void ReadingDateSelectionActivity::loop() {
     return;
   }
 
-  buttonNavigator.onRelease({MappedInputManager::Button::Down}, [this] {
-    selectedField = ButtonNavigator::nextIndex(selectedField, FIELD_COUNT);
-    requestUpdate();
-  });
+  buttonNavigator.onRelease({MappedInputManager::Button::Down},
+                            [this] { selectField(ButtonNavigator::nextIndex(selectedField, FIELD_COUNT)); });
+  buttonNavigator.onRelease({MappedInputManager::Button::Up},
+                            [this] { selectField(ButtonNavigator::previousIndex(selectedField, FIELD_COUNT)); });
+  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}, [this] { adjustField(selectedField, -1); });
+  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [this] { adjustField(selectedField, 1); });
+}
 
-  buttonNavigator.onRelease({MappedInputManager::Button::Up}, [this] {
-    selectedField = ButtonNavigator::previousIndex(selectedField, FIELD_COUNT);
-    requestUpdate();
-  });
+void ReadingDateSelectionActivity::buildScreen(UiScreen& screen) {
+  snprintf(dayText, sizeof(dayText), "%02u", day);
+  snprintf(monthText, sizeof(monthText), "%02u", month);
+  snprintf(yearText, sizeof(yearText), "%d", year);
 
-  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}, [this] { adjustSelectedField(-1); });
-  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [this] { adjustSelectedField(1); });
+  const StepperField fields[FIELD_COUNT] = {
+      {tr(STR_DAY), dayText, "00"},
+      {tr(STR_MONTH), monthText, "00"},
+      {tr(STR_YEAR), yearText, "0000"},
+  };
+  StepperFieldsSpec spec;
+  spec.fields = fields;
+  spec.count = FIELD_COUNT;
+  spec.selectedField = selectedField;
+  spec.fieldAction = ACTION_FIELD;
+  spec.decrementAction = ACTION_DEC;
+  spec.incrementAction = ACTION_INC;
+  spec.cancelAction = ACTION_CANCEL;
+  spec.okAction = ACTION_OK;
+  buildStepperFieldsScreen(screen, renderer, mappedInput, spec);
+
+  if (!mappedInput.hasTouch()) addStepperHint(screen, tr(STR_SET_DATE_HINT));
 }
 
 void ReadingDateSelectionActivity::render(RenderLock&&) {
   renderer.clearScreen();
-
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int sidePadding = metrics.contentSidePadding;
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int listHeight = metrics.listWithSubtitleRowHeight * FIELD_COUNT;
-
   HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_SET_DATE), getSelectedDateLabel().c_str());
-
-  GUI.drawList(
-      renderer, Rect{0, contentTop, pageWidth, listHeight}, FIELD_COUNT, selectedField,
-      [](int index) {
-        if (index == 0) return std::string(tr(STR_DAY));
-        if (index == 1) return std::string(tr(STR_MONTH));
-        return std::string(tr(STR_YEAR));
-      },
-      [this](int index) {
-        if (index == 0) return formatTwoDigits(day);
-        if (index == 1) return formatTwoDigits(month);
-        return std::to_string(year);
-      },
-      [](int) { return UIIcon::Recent; }, nullptr, false);
-
-  const int hintTop = contentTop + listHeight + metrics.verticalSpacing;
-  const int hintWidth = pageWidth - sidePadding * 2;
-  const std::string hint = renderer.truncatedText(UI_10_FONT_ID, tr(STR_SET_DATE_HINT), hintWidth);
-  renderer.drawText(UI_10_FONT_ID, sidePadding, hintTop, hint.c_str());
-
+  renderUi();
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CONFIRM), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer();

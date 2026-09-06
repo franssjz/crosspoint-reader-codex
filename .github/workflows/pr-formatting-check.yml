@@ -6,9 +6,10 @@ on:
       - opened
       - reopened
       - edited
+      - synchronize
 
 permissions:
-  statuses: write
+  pull-requests: read
 
 jobs:
   title-check:

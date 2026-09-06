@@ -36,6 +36,9 @@ void KOReaderAuthActivity::onWifiSelectionComplete(const bool success) {
     return;
   }
 
+  WiFi.setSleep(false);
+  LOG_DBG("KOAuth", "WiFi sleep disabled for authentication");
+
   {
     RenderLock lock(*this);
     state = AUTHENTICATING;
@@ -58,11 +61,11 @@ void KOReaderAuthActivity::onWifiSelectionComplete(const bool success) {
 
 void KOReaderAuthActivity::performAuthentication() {
   prepareMemoryBeforeAuthNetwork(renderer, "before_authenticate");
-  const auto result = mode == Mode::SIGN_UP
-                          ? KOReaderSyncClient::registerUser(
-                                profile.username, KOReaderCredentialStore::hashPassword(profile.password),
-                                KOReaderCredentialStore::resolveBaseUrl(profile.serverUrl))
-                          : KOReaderSyncClient::authenticate();
+  const auto result =
+      mode == Mode::SIGN_UP
+          ? KOReaderSyncClient::registerUser(profile.username, KOReaderCredentialStore::hashPassword(profile.password),
+                                             KOReaderCredentialStore::resolveBaseUrl(profile.serverUrl))
+          : KOReaderSyncClient::authenticate();
   restoreMemoryAfterAuthNetwork(renderer, "after_authenticate_restore");
 
   {
@@ -78,8 +81,8 @@ void KOReaderAuthActivity::performAuthentication() {
       statusMessage = mode == Mode::SIGN_UP ? tr(STR_ACCOUNT_CREATED) : tr(STR_AUTH_SUCCESS);
     } else {
       state = FAILED;
-      errorMessage = result == KOReaderSyncClient::USER_EXISTS ? tr(STR_USERNAME_TAKEN)
-                                                               : KOReaderSyncClient::errorString(result);
+      errorMessage =
+          result == KOReaderSyncClient::USER_EXISTS ? tr(STR_USERNAME_TAKEN) : KOReaderSyncClient::errorString(result);
       const char* detail = KOReaderSyncClient::lastFailureDetail();
       if (detail && detail[0]) {
         errorMessage += " - ";
@@ -149,8 +152,10 @@ void KOReaderAuthActivity::render(RenderLock&&) {
 
 void KOReaderAuthActivity::loop() {
   if (state == SUCCESS || state == FAILED) {
+    int x = 0;
+    int y = 0;
     if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
-        mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+        mappedInput.wasPressed(MappedInputManager::Button::Confirm) || mappedInput.wasScreenTapped(x, y)) {
       finish();
     }
   }

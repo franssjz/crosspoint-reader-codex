@@ -80,11 +80,11 @@
     }
     .breadcrumb-inline .sep {
       margin: 0 6px;
-      color: var(--border-color);
+      color: var(--label-color);
     }
     .breadcrumb-inline .current {
       color: var(--title-color);
-      font-weight: 500;
+      font-weight: 600;
     }
     .nav-links {
       margin: 20px 0;
@@ -169,6 +169,27 @@
     }
     .modal.picker-mode {
       max-width: 920px;
+    }
+    .modal.image-preview-mode {
+      max-width: 640px;
+    }
+    .image-preview-stage {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      overflow: auto;
+      margin-bottom: 15px;
+      border-radius: 6px;
+    }
+    .image-preview-stage img {
+      max-width: 100%;
+      max-height: 65vh;
+      object-fit: contain;
+    }
+    #imagePreviewDownload {
+      display: inline-block;
+      width: auto;
+      text-decoration: none;
     }
     .picker-columns.picker-active {
       display: flex;
@@ -766,6 +787,10 @@
       border-color: #9b59b6;
       background: rgba(155, 89, 182, 0.1);
     }
+    .image-item.crop-preview {
+      border-color: #16a085;
+      background: rgba(22, 160, 133, 0.1);
+    }
     .image-item.cover-locked {
       border-color: #e67e22;
       background: rgba(230, 126, 34, 0.1);
@@ -820,6 +845,9 @@
     }
     .state-3 .image-state-badge {
       background: #9b59b6;
+    }
+    .crop-preview .image-state-badge {
+      background: #16a085;
     }
     /* Preview Overlay (shown on hover) */
     .image-preview-overlay {
@@ -962,12 +990,6 @@
       justify-content: space-between;
       align-items: center;
       margin-bottom: 12px;
-    }
-    .contents-title {
-      font-size: 1.1em;
-      font-weight: 600;
-      color: var(--title-color);
-      margin: 0;
     }
     .summary-inline {
       color: var(--label-color);
@@ -1299,9 +1321,6 @@
         flex-wrap: wrap;
         gap: 4px;
       }
-      .contents-title {
-        font-size: 1em;
-      }
       .summary-inline {
         font-size: 0.8em;
       }
@@ -1505,7 +1524,6 @@
 <div class="page-header">
   <div class="page-header-left">
     <h2>📁 File Manager</h2>
-    <div class="breadcrumb-inline" id="directory-breadcrumbs"></div>
   </div>
 
   <div class="action-buttons">
@@ -1527,7 +1545,7 @@
 
 <div class="card">
   <div class="contents-header">
-    <h2 class="contents-title">Contents</h2>
+    <div class="breadcrumb-inline" id="directory-breadcrumbs"></div>
     <span class="summary-inline" id="folder-summary"></span>
   </div>
 
@@ -1572,9 +1590,22 @@
           <div id="convertInfo" style="display:none; margin-bottom: 10px; font-size: 0.9em;">
           </div>
 
+          <div class="advanced-setting-row">
+            <div class="setting-label">
+              <div class="setting-title">Rename from Book Metadata</div>
+              <div class="setting-desc">Use Title - Author.epub when available</div>
+            </div>
+            <div class="setting-controls">
+              <label class="toggle-switch">
+                <input type="checkbox" id="renameFromMetadataToggle" onchange="updateUploadSettingsPersistence()">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
           <div class="convert-settings" id="convertSettings" style="display:block;">
             <span>⚫ True-Grayscale</span>
-          <span>📏 Max 480×800px</span>
+          <span id="convertSizeSummary">📏 Max 480×800px</span>
           <span>📦 85% JPEG</span>
           <span>🔧 Fix SVG</span>
         </div>
@@ -1609,6 +1640,32 @@
             </div>
           </div>
           -->
+          <!-- Auto-crop Margins -->
+          <div class="advanced-setting-row">
+            <div class="setting-label">
+              <div class="setting-title">✂ Auto-crop Margins</div>
+              <div class="setting-desc">Trim uniform borders and scale image content to fit</div>
+            </div>
+            <div class="setting-controls">
+              <label class="toggle-switch">
+                <input type="checkbox" id="autoCropToggle" onchange="updateQualitySettings()">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+          <!-- Target Device -->
+          <div class="advanced-setting-row" id="deviceSettingRow">
+            <div class="setting-title">📱 Target Device</div>
+            <div class="setting-controls">
+              <div class="rotation-buttons">
+                <button class="rotation-btn device-btn active" data-value="auto" onclick="setDeviceTarget('auto')">
+                  <span id="deviceAutoLabel">Auto</span>
+                </button>
+                <button class="rotation-btn device-btn" data-value="X4" onclick="setDeviceTarget('X4')">X4</button>
+                <button class="rotation-btn device-btn" data-value="X3" onclick="setDeviceTarget('X3')">X3</button>
+              </div>
+            </div>
+          </div>
           <!-- Rotation Direction -->
           <div class="advanced-setting-row" id="rotationSettingRow">
             <div class="setting-title">↻ Rotation Direction</div>
@@ -1655,7 +1712,19 @@
             </div>
             <div class="setting-controls">
               <label class="toggle-switch">
-                <input type="checkbox" id="export-log-checkbox">
+                <input type="checkbox" id="export-log-checkbox" onchange="updateUploadSettingsPersistence()">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+          <div class="advanced-setting-row">
+            <div class="setting-label">
+              <div class="setting-title">Remember Settings</div>
+              <div class="setting-desc">Store these upload options in this browser</div>
+            </div>
+            <div class="setting-controls">
+              <label class="toggle-switch">
+                <input type="checkbox" id="rememberUploadSettings" onchange="updateUploadSettingsPersistence()">
                 <span class="toggle-slider"></span>
               </label>
             </div>
@@ -1780,6 +1849,21 @@
   </div>
 </div>
 
+<!-- Image Preview Modal -->
+<div class="modal-overlay" id="imagePreviewModal">
+  <div class="modal image-preview-mode">
+    <button class="modal-close" onclick="closeImagePreview()">&times;</button>
+    <h3>🖼️ Preview</h3>
+    <div class="folder-form">
+      <p class="file-info"><strong id="imagePreviewName"></strong></p>
+      <div class="image-preview-stage">
+        <img id="imagePreviewImg" alt="">
+      </div>
+      <a id="imagePreviewDownload" class="move-btn-confirm" rel="noopener noreferrer" target="_blank" href="#">Download</a>
+    </div>
+  </div>
+</div>
+
 <script>
   // get current path from query parameter
   const currentPath = decodeURIComponent(new URLSearchParams(window.location.search).get('path') || '/');
@@ -1887,6 +1971,7 @@
           if (overlay.id === 'deleteModal') return closeDeleteModal();
           if (overlay.id === 'renameModal') return closeRenameModal();
           if (overlay.id === 'moveModal') return closeMoveModal();
+          if (overlay.id === 'imagePreviewModal') return closeImagePreview();
           overlay.classList.remove('open');
         }
       });
@@ -1895,19 +1980,44 @@
     const breadcrumbs = document.getElementById('directory-breadcrumbs');
     const fileTable = document.getElementById('file-table');
 
-    let breadcrumbContent = '<span class="sep">/</span>';
-    if (currentPath === '/') {
-      breadcrumbContent += '<span class="current">🏠</span>';
+    const segments = currentPath.split('/').filter(Boolean);
+    breadcrumbs.replaceChildren();
+
+    const appendSep = function() {
+      const sep = document.createElement('span');
+      sep.className = 'sep';
+      sep.textContent = '›';
+      breadcrumbs.appendChild(sep);
+    };
+
+    const appendLink = function(label, href) {
+      const link = document.createElement('a');
+      link.href = href;
+      link.textContent = label;
+      breadcrumbs.appendChild(link);
+    };
+
+    const appendCurrent = function(label) {
+      const current = document.createElement('span');
+      current.className = 'current';
+      current.textContent = label;
+      breadcrumbs.appendChild(current);
+    };
+
+    if (segments.length === 0) {
+      appendCurrent('🏠 Home');
     } else {
-      breadcrumbContent += '<a href="/files">🏠</a>';
-      const pathSegments = currentPath.split('/');
-      pathSegments.slice(1, pathSegments.length - 1).forEach(function(segment, index) {
-        breadcrumbContent += '<span class="sep">/</span><a href="/files?path=' + encodeURIComponent(pathSegments.slice(0, index + 2).join('/')) + '">' + escapeHtml(segment) + '</a>';
+      appendLink('🏠 Home', '/files');
+      segments.forEach(function(segment, index) {
+        appendSep();
+        if (index === segments.length - 1) {
+          appendCurrent(segment);
+        } else {
+          const path = '/' + segments.slice(0, index + 1).join('/');
+          appendLink(segment, '/files?path=' + encodeURIComponent(path));
+        }
       });
-      breadcrumbContent += '<span class="sep">/</span>';
-      breadcrumbContent += '<span class="current">' + escapeHtml(pathSegments[pathSegments.length - 1]) + '</span>';
     }
-    breadcrumbs.innerHTML = breadcrumbContent;
 
     let files = [];
     try {
@@ -1977,8 +2087,13 @@
           // Checkbox cell + file row
           fileTableContent += `<tr class="${file.isEpub ? 'epub-file' : ''}">`;
           fileTableContent += `<td><input type="checkbox" class="select-item" data-path="${encodeURIComponent(filePath)}" data-name="${escapeHtml(file.name)}" data-type="file"></td>`;
-          fileTableContent += `<td><span class="file-icon">${file.isEpub ? '📗' : '📄'}</span>`;
-          fileTableContent += `<a rel="noopener noreferrer" target="_blank" href="/download?path=${encodeURIComponent(filePath)}" class="file-link">${escapeHtml(file.name)}</a>`;
+          const fileIsImage = isImageFile(file.name);
+          fileTableContent += `<td><span class="file-icon">${file.isEpub ? '📗' : (fileIsImage ? '🖼️' : '📄')}</span>`;
+          if (fileIsImage) {
+            fileTableContent += `<a href="${downloadUrl(filePath)}" class="file-link image-preview-link">${escapeHtml(file.name)}</a>`;
+          } else {
+            fileTableContent += `<a rel="noopener noreferrer" target="_blank" href="${downloadUrl(filePath)}" class="file-link">${escapeHtml(file.name)}</a>`;
+          }
           fileTableContent += '</td>';
           fileTableContent += file.isEpub ? '<td><span class="epub-badge">EPUB</span></td>' : `<td>${escapeHtml(file.name.split('.').pop().toUpperCase())}</td>`;
           fileTableContent += `<td>${formatFileSize(file.size)}</td>`;
@@ -1996,14 +2111,34 @@
     }
   }
 
+  // Image preview
+  function isImageFile(name) {
+    return /\.(png|jpe?g|bmp|gif|webp)$/i.test(name);
+  }
+
+  function downloadUrl(filePath) {
+    return `/download?path=${encodeURIComponent(filePath)}`;
+  }
+
+  function openImagePreview(url, name) {
+    const img = document.getElementById('imagePreviewImg');
+    document.getElementById('imagePreviewName').textContent = name;
+    img.src = url;
+    img.alt = name;
+    document.getElementById('imagePreviewDownload').href = url;
+    document.getElementById('imagePreviewModal').classList.add('open');
+  }
+
+  function closeImagePreview() {
+    document.getElementById('imagePreviewModal').classList.remove('open');
+    // Clear src to free the decoded image and avoid showing the stale one on reopen.
+    document.getElementById('imagePreviewImg').src = '';
+  }
+
   // Modal functions
   function openUploadModal() {
-    // Reset converter variables to defaults
-    ENABLE_GRAYSCALE = true;
-    JPEG_QUALITY = 85;
-    HANDEDNESS = 'right';
-    OVERLAP_PERCENT = 5;
     imageStates = {};
+    restoreUploadSettingsFromStorage();
 
     // Hide convert options when opening modal (no files selected initially)
     const convertOptions = document.getElementById('convertOptions');
@@ -2011,10 +2146,6 @@
       convertOptions.style.display = 'none';
     }
 
-    // Reset rotation and overlap UI
-    setHandedness('right');
-    setOverlap(5);
-    
     // Hide log section from previous session
     const logSection = document.getElementById('log-section');
     if (logSection) logSection.classList.remove('visible');
@@ -2073,12 +2204,14 @@
     document.getElementById('progress-container').style.display = 'none';
     document.getElementById('progress-fill').style.width = '0%';
     document.getElementById('progress-fill').style.backgroundColor = '#27ae60';
-    document.getElementById('convertBeforeUpload').checked = false;
+    const convertOptions = document.getElementById('convertOptions');
+    if (convertOptions) convertOptions.style.display = 'none';
     document.getElementById('convertInfo').style.display = 'none';
     document.getElementById('convertWarning').style.display = 'none';
     // Clear image picker cache and reset layout
     epubImagesCache = [];
     imageStates = {};
+    autoCropProtectedPaths = new Set();
     document.getElementById('imagePickerSection').style.display = 'none';
     const imageGrid = document.getElementById('imageGrid');
     if (imageGrid) imageGrid.innerHTML = '';
@@ -2095,14 +2228,9 @@
       advancedOptionsToggle.style.opacity = '0.5';
       advancedOptionsToggle.style.pointerEvents = 'none';
     }
-    // Reset to defaults
-    document.getElementById('qualitySlider').value = 85;
-    document.getElementById('qualityInput').value = 85;
+    applyUploadSettings();
+    // Font stripping is a fork-only, per-upload choice and is never remembered.
     document.getElementById('stripEmbeddedFonts').checked = false;
-    setHandedness('right');
-    setOverlap(5);
-    // Update converter variables
-    updateQualitySettings();
   }
 
   function updateBatchModeUI(isBatch) {
@@ -2139,6 +2267,7 @@
       advancedOptionsToggle.style.opacity = checked ? '1' : '0.5';
       advancedOptionsToggle.style.pointerEvents = checked ? 'auto' : 'none';
     }
+    updateUploadSettingsPersistence();
   }
 
   function toggleAdvancedOptions() {
@@ -2176,21 +2305,15 @@
   function setQualityPreset(value) {
     document.getElementById('qualitySlider').value = value;
     document.getElementById('qualityInput').value = value;
-    // Update active preset
     document.querySelectorAll('.quality-preset').forEach(btn => {
-      btn.classList.remove('active');
-      if (parseInt(btn.dataset.value, 10) === value) {
-        btn.classList.add('active');
-      }
+      btn.classList.toggle('active', parseInt(btn.dataset.value, 10) === value);
     });
     updateQualitySettings();
   }
 
   function updateQualitySettings() {
     const quality = document.getElementById('qualitySlider').value;
-    // Check if grayscaleToggle exists (may be hidden for compatibility with other devices)
-    const grayscaleToggle = document.getElementById('grayscaleToggle');
-    const grayscale = grayscaleToggle ? grayscaleToggle.checked : true; // Default to true for e-ink
+    const autoCropToggle = document.getElementById('autoCropToggle');
 
     // Update displays (if element exists)
     const qualityDisplay = document.getElementById('qualityDisplaySimple');
@@ -2201,6 +2324,11 @@
     // Update converter variables (used by processImage and applyGrayscale)
     JPEG_QUALITY = parseInt(quality, 10);
     ENABLE_GRAYSCALE = true; // Always grayscale for e-ink
+    ENABLE_AUTO_CROP = autoCropToggle ? autoCropToggle.checked : false;
+    if (isImagePickerVisible()) {
+      renderImageGrid();
+    }
+    updateUploadSettingsPersistence();
   }
 
   function setHandedness(value) {
@@ -2210,9 +2338,10 @@
     document.getElementById('rotationCCW').classList.remove('active');
     document.getElementById(value === 'right' ? 'rotationCW' : 'rotationCCW').classList.add('active');
     // Re-render grid to update rotation arrows
-    if (document.getElementById('imagePickerSection').style.display !== 'none') {
+    if (isImagePickerVisible()) {
       renderImageGrid();
     }
+    updateUploadSettingsPersistence();
   }
 
   function setOverlap(value) {
@@ -2221,6 +2350,48 @@
     document.querySelectorAll('.overlap-btn').forEach(btn => {
       btn.classList.toggle('active', parseInt(btn.dataset.value) === value);
     });
+    updateUploadSettingsPersistence();
+  }
+
+  function isImagePickerVisible() {
+    const pickerSection = document.getElementById('imagePickerSection');
+    return pickerSection && pickerSection.style.display !== 'none';
+  }
+
+  function loadPreviewImage(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Preview image load failed'));
+      img.src = dataUrl;
+    });
+  }
+
+  async function createAutoCropPreview(dataUrl, imagePath, width, height) {
+    const img = await loadPreviewImage(dataUrl);
+    const cropped = createAutoCroppedCanvas(img, imagePath, width, height, true);
+    if (!cropped.crop) return null;
+
+    const maxPreviewW = 220;
+    const maxPreviewH = 160;
+    const scale = Math.min(maxPreviewW / cropped.width, maxPreviewH / cropped.height, 1);
+    const previewW = Math.max(1, Math.round(cropped.width * scale));
+    const previewH = Math.max(1, Math.round(cropped.height * scale));
+    const previewCanvas = document.createElement('canvas');
+    previewCanvas.width = previewW;
+    previewCanvas.height = previewH;
+    const previewCtx = previewCanvas.getContext('2d');
+    previewCtx.imageSmoothingEnabled = true;
+    previewCtx.imageSmoothingQuality = 'high';
+    previewCtx.fillStyle = '#FFF';
+    previewCtx.fillRect(0, 0, previewW, previewH);
+    previewCtx.drawImage(cropped.canvas, 0, 0, previewW, previewH);
+
+    return {
+      dataUrl: previewCanvas.toDataURL('image/jpeg', 0.82),
+      width: cropped.width,
+      height: cropped.height
+    };
   }
 
   // ============================================================================
@@ -2426,20 +2597,30 @@
       
       // Tiny images (<200x200) are locked like separators
       const isTiny = (dims.width < 200 && dims.height < 200);
+      const isLockedImage = isCover || isSeparator || isTiny;
+      let autoCropPreview = null;
+      if (!isLockedImage) {
+        try {
+          autoCropPreview = await createAutoCropPreview(dataUrl, path, dims.width, dims.height);
+        } catch (e) {
+          console.warn('Auto-crop preview failed for', path, e);
+        }
+      }
       
       // Images that fit screen can only rotate, not split
-      const fitsScreen = (dims.width <= 480 && dims.height <= 800);
-      
+      const fitsScreen = (dims.width <= MAX_WIDTH && dims.height <= MAX_HEIGHT);
+
       // Split capability - no upscaling allowed
-      // H-Split scales width to 800, so needs width >= 800
-      // V-Split scales height to 800, so needs height >= 800
-      const canHSplit = dims.width >= 800;
-      const canVSplit = dims.height >= 800;
+      // H-Split scales width to MAX_HEIGHT (long edge), so needs width >= MAX_HEIGHT
+      // V-Split scales height to MAX_HEIGHT, so needs height >= MAX_HEIGHT
+      const canHSplit = dims.width >= MAX_HEIGHT;
+      const canVSplit = dims.height >= MAX_HEIGHT;
 
       images.push({
         path: path,
         name: filename,
         dataUrl: dataUrl,
+        autoCropPreview: autoCropPreview,
         width: dims.width,
         height: dims.height,
         isCover: isCover,
@@ -2577,12 +2758,18 @@
     // Reset state
     imageStates = {};
     epubImagesCache = [];
+    autoCropProtectedPaths = new Set();
     pendingConversionFile = file;
 
     // Extract images
     try {
       const images = await extractImagesForPreview(file);
       epubImagesCache = images;
+      autoCropProtectedPaths = new Set(
+        images
+          .filter(img => img.isCover || img.isSeparator)
+          .map(img => img.path)
+      );
 
       // Initialize all states to 0 (Normal)
       images.forEach(img => {
@@ -2672,16 +2859,16 @@
         if (showSplitLines) {
           let finalWidth;
           if (state === 1) {
-            // H-Split: scale width to 800, rotate, then check width
-            const scaledH = Math.round(img.height * (800 / img.width));
+            // H-Split: scale width to MAX_HEIGHT, rotate, then check width
+            const scaledH = Math.round(img.height * (MAX_HEIGHT / img.width));
             finalWidth = scaledH; // After rotation, height becomes width
           } else {
-            // V-Split: scale height to 800, then check width
-            finalWidth = Math.round(img.width * (800 / img.height));
+            // V-Split: scale height to MAX_HEIGHT, then check width
+            finalWidth = Math.round(img.width * (MAX_HEIGHT / img.height));
           }
-          if (finalWidth > 480) {
-            const minOverlapPx = Math.round(480 * (OVERLAP_PERCENT / 100));
-            const maxStep = 480 - minOverlapPx;
+          if (finalWidth > MAX_WIDTH) {
+            const minOverlapPx = Math.round(MAX_WIDTH * (OVERLAP_PERCENT / 100));
+            const maxStep = MAX_WIDTH - minOverlapPx;
             numParts = Math.ceil((finalWidth - minOverlapPx) / maxStep);
             if (numParts < 2) numParts = 2;
           }
@@ -2702,16 +2889,19 @@
         // Build tooltip
         const stateText = stateLabels[state] || 'Normal';
         const partsText = numParts > 1 ? ` (${numParts} parts)` : '';
+        const showCropPreview = ENABLE_AUTO_CROP && img.autoCropPreview;
+        const previewSrc = showCropPreview ? img.autoCropPreview.dataUrl : img.dataUrl;
+        const cropText = showCropPreview ? ` | Auto-crop: ${img.autoCropPreview.width}×${img.autoCropPreview.height}` : '';
         
-        item.className = `image-item ${stateClasses[state]} ${rotateClass}`.trim();
+        item.className = `image-item ${stateClasses[state]} ${rotateClass} ${showCropPreview ? 'crop-preview' : ''}`.trim();
         item.onclick = () => cycleImageState(img.path);
-        item.title = `${img.width}×${img.height} - ${stateText}${partsText}`;
+        item.title = `${img.width}×${img.height} - ${stateText}${partsText}${cropText}`;
         item.innerHTML = `
-          <span class="image-state-badge">${stateLabels[state] || '•'}</span>
+          <span class="image-state-badge">${showCropPreview ? '✂' : (stateLabels[state] || '•')}</span>
           <div class="image-preview-overlay">
             ${splitLinesHtml}
           </div>
-          <img src="${img.dataUrl}" alt="${img.name}" loading="lazy">
+          <img src="${previewSrc}" alt="${img.name}" loading="lazy">
           <div class="image-name">${img.name}</div>
         `;
       }
@@ -2807,6 +2997,14 @@
 
   // Initialize quality settings handlers
   document.addEventListener('DOMContentLoaded', function() {
+    // Delegated so it survives file-table re-renders (avoids inline onclick with untrusted names).
+    document.getElementById('file-table').addEventListener('click', function(e) {
+      const link = e.target.closest('.image-preview-link');
+      if (!link) return;
+      e.preventDefault();
+      openImagePreview(link.getAttribute('href'), link.textContent);
+    });
+
     const qualitySlider = document.getElementById('qualitySlider');
     const qualityInput = document.getElementById('qualityInput');
 
@@ -2821,7 +3019,12 @@
 
     if (qualitySlider && qualityInput) {
       // Initialize converter variables with UI default values
-      updateQualitySettings();
+      suppressUploadSettingsSave = true;
+      try {
+        updateQualitySettings();
+      } finally {
+        suppressUploadSettingsSave = false;
+      }
 
       // Deselect all presets when slider is manually changed
       const deselectPresets = function() {
@@ -2950,6 +3153,7 @@
   function clearImagePicker() {
     epubImagesCache = [];
     imageStates = {};
+    autoCropProtectedPaths = new Set();
     const imageGrid = document.getElementById('imageGrid');
     if (imageGrid) imageGrid.innerHTML = '';
     const pickerSection = document.getElementById('imagePickerSection');
@@ -2979,12 +3183,26 @@
       }, 10);
     });
 
-    // Route dropped files through the normal validation and conversion pipeline.
+    // Drag-and-drop: route dropped files through the existing file input so the
+    // normal validateFile() pipeline (EPUB optimize options, batch mode, upload)
+    // runs unchanged. Assigning input.files via DataTransfer is supported in all
+    // current Chromium/Firefox/Safari, which is what the device serves the page to.
     const dropZone = document.getElementById('dropZone');
     if (dropZone) {
+      // dragenter/dragleave fire for child elements too; a counter avoids the
+      // highlight flickering as the cursor moves over the hint text or input.
       let dragDepth = 0;
-      const uploadBusy = () => typeof isUploadInProgress !== 'undefined' && isUploadInProgress;
 
+      // An in-flight transfer can't be interrupted, so the zone is inert while
+      // uploading: no picker, no hover highlight — matching the disabled upload
+      // button and the drop handler's guard below.
+      const uploadBusy = () =>
+        typeof isUploadInProgress !== 'undefined' && isUploadInProgress;
+
+      // "click to browse" should work anywhere in the zone, not just on the
+      // native button. The hint has pointer-events:none so its clicks retarget
+      // to the zone; clicks on the native button retarget to fileInput (shadow
+      // DOM) and are skipped here so the picker isn't opened twice.
       dropZone.addEventListener('click', function(e) {
         if (uploadBusy()) return;
         if (e.target !== fileInput) fileInput.click();
@@ -2997,6 +3215,7 @@
       });
 
       dropZone.addEventListener('dragover', function(e) {
+        // Required so the browser doesn't navigate to / open the dropped file.
         e.preventDefault();
       });
 
@@ -3010,14 +3229,18 @@
         e.preventDefault();
         dragDepth = 0;
         dropZone.classList.remove('dragover');
+
+        // Don't let a drop disrupt an in-flight transfer.
         if (uploadBusy()) return;
 
         const dropped = e.dataTransfer && e.dataTransfer.files;
         if (!dropped || dropped.length === 0) return;
 
+        // Replace the current selection, matching native file-picker semantics.
         const dt = new DataTransfer();
         for (const file of dropped) dt.items.add(file);
         fileInput.files = dt.files;
+
         validateFile();
       });
     }
@@ -3030,11 +3253,18 @@
     const convertOptions = document.getElementById('convertOptions');
     fileInput.classList.toggle('has-files', files.length > 0);
 
-    // Show/hide convert options based on file selection
-    if (files.length > 0) {
+    // Show convert options only when at least one selected file is an EPUB.
+    const hasEpub = Array.from(files).some(f => f.name.toLowerCase().endsWith('.epub'));
+    if (files.length > 0 && hasEpub) {
       convertOptions.style.display = 'block';
+      toggleConvertOptions();
     } else {
-      clearImagePicker();
+      convertOptions.style.display = 'none';
+      uploadBtn.textContent = 'Upload';
+      uploadBtn.classList.remove('optimize');
+      document.getElementById('convertInfo').style.display = 'none';
+      document.getElementById('convertWarning').style.display = 'none';
+      if (files.length === 0) clearImagePicker();
     }
 
     if (files.length > 0) {
@@ -3043,6 +3273,11 @@
       const convertEnabled = document.getElementById('convertBeforeUpload').checked;
       if (advancedContent.classList.contains('visible') && files.length === 1 && convertEnabled && files[0].name.toLowerCase().endsWith('.epub')) {
         showImagePicker(files[0]).catch(err => console.error('Image picker error:', err));
+      } else {
+        // New selection no longer matches single-EPUB-with-advanced-expanded —
+        // tear down any picker from a previous file so the grid and picker-mode
+        // layout don't linger. clearImagePicker is idempotent.
+        clearImagePicker();
       }
 
       // If multiple files with conversion, inform user about batch mode
@@ -3068,7 +3303,8 @@ let operationCancelled = false; // Set by Cancel to stop conversion loops and up
 let uploadGeneration = 0;       // Incremented each uploadFile() call; guards stale restoreAfterCancel()
 let currentUploadWs = null;     // Active WebSocket reference for external abort
 let currentUploadXhr = null;    // Active XHR reference for external abort
-// HTTP and WebSocket use adjacent ports on-device and in the simulator.
+// On-device HTTP uses port 80 and WebSocket uses 81. The simulator maps the
+// same adjacent-port contract to an unprivileged host pair such as 8080/8081.
 const HTTP_PORT = Number(window.location.port || 80);
 const WS_PORT = HTTP_PORT + 1;
 const WS_CHUNK_SIZE = 4096; // 4KB chunks - smaller for ESP32 stability
@@ -3077,20 +3313,110 @@ const WS_CHUNK_SIZE = 4096; // 4KB chunks - smaller for ESP32 stability
 // EPUB Image Conversion Functions (from Baseline JPEG Converter)
 // ============================================================================
 
+// Device profiles (short edge × long edge in portrait orientation)
+const DEVICE_PROFILES = {
+  X4: { width: 480, height: 800, label: 'X4' },
+  X3: { width: 528, height: 792, label: 'X3' },
+};
+
 // Default conversion settings
-const DEFAULT_MAX_WIDTH = 480;
-const DEFAULT_MAX_HEIGHT = 800;
+const DEFAULT_DEVICE = 'X4';
+const DEFAULT_MAX_WIDTH = DEVICE_PROFILES[DEFAULT_DEVICE].width;
+const DEFAULT_MAX_HEIGHT = DEVICE_PROFILES[DEFAULT_DEVICE].height;
 const DEFAULT_JPEG_QUALITY = 85;
 const DEFAULT_ENABLE_GRAYSCALE = true;
+const DEFAULT_ENABLE_AUTO_CROP = false;
+// Auto-crop is opt-in because sparse title/logo pages can be zoomed aggressively.
+const CROP_WHITE_THRESHOLD = 245;
+const CROP_BACKGROUND_TOLERANCE = 28;
+const CROP_BACKGROUND_MAX_SPREAD = 24;
+const CROP_EDGE_SAMPLE_SIZE = 12;
+const CROP_PADDING_PX = 8;
+const MIN_CROP_SAVINGS_RATIO = 0.08;
+const MIN_COLOR_CROP_SAVINGS_RATIO = 0.20;
+const MIN_CROP_DIMENSION = 240;
 // Note: Overlap is now always centered distribution (min 5%)
 
 // Dynamic conversion settings (updated by UI)
+let DEVICE_TARGET = 'auto';      // 'auto' | 'X4' | 'X3'
+let DETECTED_DEVICE = null;      // populated from /api/status
+let ACTIVE_DEVICE = DEFAULT_DEVICE;
 let MAX_WIDTH = DEFAULT_MAX_WIDTH;
 let MAX_HEIGHT = DEFAULT_MAX_HEIGHT;
 let JPEG_QUALITY = DEFAULT_JPEG_QUALITY;
 let ENABLE_GRAYSCALE = DEFAULT_ENABLE_GRAYSCALE;
+let ENABLE_AUTO_CROP = DEFAULT_ENABLE_AUTO_CROP;
 let HANDEDNESS = 'right'; // 'right' = clockwise (right-handed), 'left' = counter-clockwise (left-handed)
 let OVERLAP_PERCENT = 5; // Minimum overlap percentage for splits (5%, 10%, 15%)
+const UPLOAD_SETTINGS_STORAGE_KEY = 'crosspoint.files.uploadSettings.v1';
+const DEFAULT_UPLOAD_SETTINGS = Object.freeze({
+  convertBeforeUpload: false,
+  renameFromMetadata: false,
+  quality: DEFAULT_JPEG_QUALITY,
+  autoCrop: DEFAULT_ENABLE_AUTO_CROP,
+  deviceTarget: 'auto',
+  handedness: 'right',
+  overlap: 5,
+  exportLog: false
+});
+let suppressUploadSettingsSave = false;
+
+function getCurrentUploadSettings() {
+  return {
+    convertBeforeUpload: !!document.getElementById('convertBeforeUpload')?.checked,
+    renameFromMetadata: !!document.getElementById('renameFromMetadataToggle')?.checked,
+    quality: parseInt(document.getElementById('qualitySlider')?.value || JPEG_QUALITY, 10),
+    autoCrop: !!document.getElementById('autoCropToggle')?.checked,
+    deviceTarget: DEVICE_TARGET,
+    handedness: HANDEDNESS,
+    overlap: OVERLAP_PERCENT,
+    exportLog: !!document.getElementById('export-log-checkbox')?.checked
+  };
+}
+
+function applyUploadSettings(settings = {}) {
+  const merged = { ...DEFAULT_UPLOAD_SETTINGS, ...settings };
+  suppressUploadSettingsSave = true;
+  try {
+    document.getElementById('convertBeforeUpload').checked = !!merged.convertBeforeUpload;
+    document.getElementById('renameFromMetadataToggle').checked = !!merged.renameFromMetadata;
+    document.getElementById('autoCropToggle').checked = !!merged.autoCrop;
+    document.getElementById('export-log-checkbox').checked = !!merged.exportLog;
+    document.getElementById('rememberUploadSettings').checked = !!settings.rememberSettings;
+
+    setQualityPreset(Math.max(1, Math.min(95, parseInt(merged.quality, 10) || DEFAULT_JPEG_QUALITY)));
+    setDeviceTarget(['auto', 'X3', 'X4'].includes(merged.deviceTarget) ? merged.deviceTarget : 'auto');
+    setHandedness(merged.handedness === 'left' ? 'left' : 'right');
+    setOverlap([5, 10, 15].includes(Number(merged.overlap)) ? Number(merged.overlap) : 5);
+    toggleConvertOptions();
+  } finally {
+    suppressUploadSettingsSave = false;
+  }
+}
+
+function restoreUploadSettingsFromStorage() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(UPLOAD_SETTINGS_STORAGE_KEY) || 'null');
+    applyUploadSettings(saved?.rememberSettings ? saved : undefined);
+  } catch (e) {
+    console.warn('Could not read remembered upload settings:', e);
+    applyUploadSettings();
+  }
+}
+
+function updateUploadSettingsPersistence() {
+  if (suppressUploadSettingsSave) return;
+  try {
+    if (!document.getElementById('rememberUploadSettings')?.checked) {
+      localStorage.removeItem(UPLOAD_SETTINGS_STORAGE_KEY);
+      return;
+    }
+    const settings = { ...getCurrentUploadSettings(), rememberSettings: true };
+    localStorage.setItem(UPLOAD_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch (e) {
+    console.warn('Could not save upload settings:', e);
+  }
+}
 
 // ============================================================================
 // Image Picker State Management
@@ -3098,6 +3424,7 @@ let OVERLAP_PERCENT = 5; // Minimum overlap percentage for splits (5%, 10%, 15%)
 
 let imageStates = {};        // Map: imagePath -> state (0=Normal, 1=H-Split, 2=V-Split, 3=Rotate)
 let epubImagesCache = [];    // Cache of extracted images for preview
+let autoCropProtectedPaths = new Set(); // Picker-locked covers/separators should never be auto-cropped
 let pendingConversionFile = null;  // File awaiting conversion after image selection
 
 // ============================================================================
@@ -3120,10 +3447,54 @@ async function fetchVersion() {
     if (response.ok) {
       const data = await response.json();
       crosspointVersion = data.version || 'Unknown';
+      if (data.device === 'X3' || data.device === 'X4') {
+        DETECTED_DEVICE = data.device;
+        applyDeviceTarget();
+      }
     }
   } catch (e) {
     console.error('Failed to fetch version:', e);
   }
+}
+
+// Resolve DEVICE_TARGET ('auto' | 'X4' | 'X3') to a concrete profile and update UI.
+function applyDeviceTarget() {
+  const resolved = DEVICE_TARGET === 'auto' ? (DETECTED_DEVICE || DEFAULT_DEVICE) : DEVICE_TARGET;
+  const profile = DEVICE_PROFILES[resolved] || DEVICE_PROFILES[DEFAULT_DEVICE];
+  ACTIVE_DEVICE = resolved;
+  MAX_WIDTH = profile.width;
+  MAX_HEIGHT = profile.height;
+
+  const summary = document.getElementById('convertSizeSummary');
+  if (summary) {
+    summary.textContent = `📏 Max ${profile.width}×${profile.height}px`;
+  }
+  document.querySelectorAll('.device-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.value === DEVICE_TARGET);
+  });
+  const autoLabel = document.getElementById('deviceAutoLabel');
+  if (autoLabel) {
+    autoLabel.textContent = DETECTED_DEVICE ? `Auto (${DETECTED_DEVICE})` : 'Auto';
+  }
+
+  // Recompute picker classification with new dimensions, then refresh grid.
+  if (Array.isArray(epubImagesCache) && epubImagesCache.length > 0) {
+    for (const img of epubImagesCache) {
+      img.fitsScreen = (img.width <= MAX_WIDTH && img.height <= MAX_HEIGHT);
+      img.canHSplit = img.width >= MAX_HEIGHT;
+      img.canVSplit = img.height >= MAX_HEIGHT;
+    }
+    const pickerSection = document.getElementById('imagePickerSection');
+    if (pickerSection && pickerSection.style.display !== 'none' && typeof renderImageGrid === 'function') {
+      renderImageGrid();
+    }
+  }
+}
+
+function setDeviceTarget(value) {
+  DEVICE_TARGET = value;
+  applyDeviceTarget();
+  updateUploadSettingsPersistence();
 }
 
 // Batch logging system for multiple files
@@ -3282,7 +3653,7 @@ function startBatchLog(fileCount) {
 }
 
 // Save current file's log to batch entries
-function saveToFileBatchLog(fileName, succeeded) {
+function saveToFileBatchLog(fileName, succeeded, originalSize = 0, newSize = 0) {
   if (!isBatchMode) return;
 
   const entries = Array.from(logContainer.querySelectorAll('.log-entry'));
@@ -3304,6 +3675,10 @@ function saveToFileBatchLog(fileName, succeeded) {
   batchStats.totalSplits += conversionStats.splits;
   batchStats.totalFixes += conversionStats.fixes;
   batchStats.totalErrors += conversionStats.errors;
+  // Defaults of 0 keep failure-path callers safe — files that never
+  // produced a converted blob contribute nothing to the totals.
+  batchStats.totalOriginalSize += originalSize;
+  batchStats.totalNewSize += newSize;
 
   // Clear for next file
   logContainer.innerHTML = '';
@@ -3336,6 +3711,22 @@ function finalizeBatchLog() {
     });
   });
 
+  // Aggregate size totals: only emit rows when at least one file was successfully
+  // converted (totalOriginalSize stays 0 for batches where conversion was off or
+  // every file fell back to original upload).
+  const totalSaved = batchStats.totalOriginalSize - batchStats.totalNewSize;
+  const totalSavedPct = batchStats.totalOriginalSize > 0
+    ? ((totalSaved / batchStats.totalOriginalSize) * 100).toFixed(1)
+    : '0.0';
+  const sizeRowsHtml = batchStats.totalOriginalSize > 0 ? `
+        <tr><td>Total original</td><td>${formatBytes(batchStats.totalOriginalSize)}</td></tr>
+        <tr><td>Total optimised</td><td>${formatBytes(batchStats.totalNewSize)}</td></tr>
+        <tr><td>Total saved</td><td class="${totalSaved > 0 ? 'saved' : 'increased'}">${
+          totalSaved > 0
+            ? `${formatBytes(totalSaved)} (${totalSavedPct}%)`
+            : `+${formatBytes(-totalSaved)}`
+        }</td></tr>` : '';
+
   // Add batch summary
   const batchSummaryHtml = `
     <div class="log-summary">
@@ -3347,7 +3738,7 @@ function finalizeBatchLog() {
         <tr><td>Total images processed</td><td>${batchStats.totalImages}</td></tr>
         <tr><td>Total splits</td><td>${batchStats.totalSplits}</td></tr>
         <tr><td>Total fixes applied</td><td>${batchStats.totalFixes}</td></tr>
-        ${batchStats.totalErrors > 0 ? `<tr><td>Total errors</td><td style="color:#e74c3c">${batchStats.totalErrors}</td></tr>` : ''}
+        ${batchStats.totalErrors > 0 ? `<tr><td>Total errors</td><td style="color:#e74c3c">${batchStats.totalErrors}</td></tr>` : ''}${sizeRowsHtml}
         <tr><td>Total time</td><td>${batchTime.toFixed(1)}s</td></tr>
       </table>
     </div>
@@ -3512,6 +3903,104 @@ async function findOPFPath(zip) {
   return fallback;
 }
 
+function sanitizeMetadataFilenamePart(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return (text.normalize ? text.normalize('NFC') : text)
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[. ]+/g, '')
+    .replace(/[. ]+$/g, '')
+    .trim();
+}
+
+function buildMetadataFilename(title, author) {
+  title = sanitizeMetadataFilenamePart(title);
+  author = sanitizeMetadataFilenamePart(author);
+  if (!title) return '';
+  let base = author ? `${title} - ${author}` : title;
+  if (base.length > 180) base = base.substring(0, 180).replace(/\s+\S*$/g, '').trim() || base.substring(0, 180).trim();
+  return `${base}.epub`;
+}
+
+async function getMetadataFilenameForEpub(file) {
+  if (typeof JSZip === 'undefined') return '';
+  const zip = await JSZip.loadAsync(file);
+  const opfPath = await findOPFPath(zip);
+  if (!opfPath || !zip.files[opfPath]) return '';
+
+  const doc = new DOMParser().parseFromString(await safeReadText(zip.files[opfPath]), 'application/xml');
+  if (doc.querySelector('parsererror')) return '';
+
+  const title = doc.getElementsByTagNameNS('*', 'title')[0]?.textContent || '';
+  const creators = Array.from(doc.getElementsByTagNameNS('*', 'creator'));
+  const getCreatorRole = el => (
+    el.getAttribute('role') ||
+    el.getAttribute('opf:role') ||
+    el.getAttributeNS('http://www.idpf.org/2007/opf', 'role') ||
+    ''
+  ).toLowerCase();
+  const authorEl = creators.find(el => getCreatorRole(el) === 'aut') ||
+                   creators.find(el => !getCreatorRole(el));
+  const authorText = authorEl?.textContent?.trim();
+  const author = authorText ||
+                 authorEl?.getAttribute('file-as') ||
+                 authorEl?.getAttribute('opf:file-as') ||
+                 authorEl?.getAttributeNS('http://www.idpf.org/2007/opf', 'file-as') ||
+                 '';
+  return buildMetadataFilename(title, author);
+}
+
+async function maybeRenameEbookFile(file) {
+  const renameToggle = document.getElementById('renameFromMetadataToggle');
+  if (!renameToggle || !renameToggle.checked || !file.name.toLowerCase().endsWith('.epub')) {
+    return file;
+  }
+
+  try {
+    const metadataName = await getMetadataFilenameForEpub(file);
+    if (!metadataName || metadataName === file.name) return file;
+    return new File([file], metadataName, {
+      type: file.type || 'application/epub+zip',
+      lastModified: file.lastModified
+    });
+  } catch (e) {
+    console.warn('Could not rename EPUB from metadata:', e);
+    return file;
+  }
+}
+
+function reserveAvailableUploadFilename(fileName, usedFileNames) {
+  const normalize = name => name.toLowerCase();
+  if (!usedFileNames.has(normalize(fileName))) {
+    usedFileNames.add(normalize(fileName));
+    return fileName;
+  }
+
+  const dotIndex = fileName.lastIndexOf('.');
+  const extensionIndex = dotIndex > 0 ? dotIndex : fileName.length;
+  const baseName = fileName.substring(0, extensionIndex);
+  const extension = fileName.substring(extensionIndex);
+  let nextSuffix = 2;
+
+  let candidateName;
+  do {
+    candidateName = `${baseName} (${nextSuffix})${extension}`;
+    nextSuffix++;
+  } while (usedFileNames.has(normalize(candidateName)));
+
+  usedFileNames.add(normalize(candidateName));
+  return candidateName;
+}
+
+async function fetchExistingUploadNames() {
+  const response = await fetch('/api/files?path=' + encodeURIComponent(currentPath) + '&_=' + Date.now());
+  if (!response.ok) {
+    throw new Error(response.status + ' ' + response.statusText);
+  }
+  const entries = await response.json();
+  return new Set(entries.map(entry => entry.name.toLowerCase()));
+}
+
 /**
  * Resolve a relative href against a base file path.
  * Handles multiple ../, ./, absolute /, and bare relative paths.
@@ -3528,6 +4017,64 @@ function resolvePath(basePath, href) {
   }
   const resolved = [...baseParts, ...hrefParts].join('/');
   return resolved.replace(/\/+/g, '/');
+}
+
+/** Remove XML comments from XHTML source text. Returns {text, count, bytes}. */
+function stripComments(xml) {
+  const SKIPPED = [
+    { open: '<![CDATA[', close: ']]>' },
+    { open: '<?', close: '?>' },
+  ];
+
+  const encoder = new TextEncoder();
+  const out = [];
+  let i = 0;
+  let count = 0;
+  let bytes = 0;
+
+  const doctypeEnd = (from) => {
+    const gt = xml.indexOf('>', from);
+    const subset = xml.indexOf('[', from);
+    if (subset < 0 || (gt >= 0 && subset > gt)) return gt < 0 ? xml.length : gt + 1;
+    const close = xml.indexOf(']>', subset);
+    return close < 0 ? xml.length : close + 2;
+  };
+
+  while (i < xml.length) {
+    const next = xml.indexOf('<', i);
+    if (next < 0) { out.push(xml.slice(i)); break; }
+    if (next > i) out.push(xml.slice(i, next));
+
+    if (xml.startsWith('<!--', next)) {
+      const close = xml.indexOf('-->', next + 4);
+      const end = close < 0 ? xml.length : close + 3;
+      count++;
+      bytes += encoder.encode(xml.slice(next, end)).length;
+      i = end;
+      continue;
+    }
+
+    if (xml.startsWith('<!DOCTYPE', next)) {
+      const end = doctypeEnd(next + 9);
+      out.push(xml.slice(next, end));
+      i = end;
+      continue;
+    }
+
+    const skipped = SKIPPED.find(s => xml.startsWith(s.open, next));
+    if (skipped) {
+      const close = xml.indexOf(skipped.close, next + skipped.open.length);
+      const end = close < 0 ? xml.length : close + skipped.close.length;
+      out.push(xml.slice(next, end));
+      i = end;
+      continue;
+    }
+
+    out.push('<');
+    i = next + 1;
+  }
+
+  return { text: out.join(''), count, bytes };
 }
 
 /**
@@ -3606,14 +4153,18 @@ function syncNCXIdentifier(ncxText, mainIdentifier) {
   return t;
 }
 
-// Embedded font removal is optional because optimized EPUBs may also be used
-// in readers that honor their publisher fonts. CrossPoint itself does not.
+// ===== Embedded font removal =====
+// CrossPoint renders with built-in / SD-card fonts and never loads fonts
+// embedded in an EPUB, so they are dead weight (often 100KB-2MB per book).
 const FONT_EXT_REGEX = /\.(ttf|otf|woff2?|eot)$/;
 const FONT_MEDIA_TYPE_REGEX = /^(font\/|application\/font-|application\/x-font-|application\/vnd\.ms-(opentype|fontobject)$)/i;
 
+// Returns a Set of zip-root-relative paths of embedded font files, detected by
+// file extension and by OPF manifest media-type (catches odd extensions).
 function collectFontPaths(zip, opfContent, opfPath) {
   const fontPaths = new Set();
   zip.forEach(p => { if (FONT_EXT_REGEX.test(p.toLowerCase())) fontPaths.add(p); });
+
   if (opfContent && opfPath) {
     try {
       const doc = new DOMParser().parseFromString(opfContent, 'application/xml');
@@ -3627,23 +4178,31 @@ function collectFontPaths(zip, opfContent, opfPath) {
           }
         }
       }
-    } catch (e) { /* extension detection remains available */ }
+    } catch (e) {
+      // Extension-based detection already covers the common cases
+    }
   }
   return fontPaths;
 }
 
+// Strips all @font-face rules from CSS. Rules can also embed fonts directly as
+// multi-hundred-KB data: URIs, so this is a size win even without font files.
 function stripFontFaceRules(css) {
   let count = 0;
   const stripped = css.replace(/@font-face(?:\s|\/\*[\s\S]*?\*\/)*\{[^{}]*\}/gi, () => { count++; return ''; });
   return { css: stripped, count };
 }
 
+// Removes font-obfuscation <EncryptedData> entries from META-INF/encryption.xml.
+// Returns { dropFile: true } when nothing meaningful remains, { modified, xml }
+// when some entries were removed, or { modified: false } to keep the file as-is.
 function stripFontEncryptionEntries(xmlText, fontPaths) {
   try {
     const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
     if (doc.querySelector('parsererror')) return { modified: false };
+    const entries = [...doc.getElementsByTagNameNS('*', 'EncryptedData')];
     let removed = 0;
-    for (const entry of [...doc.getElementsByTagNameNS('*', 'EncryptedData')]) {
+    for (const entry of entries) {
       const ref = entry.getElementsByTagNameNS('*', 'CipherReference')[0];
       const uri = ref ? decodeHref(ref.getAttribute('URI') || '') : '';
       if (fontPaths.has(uri.replace(/^\//, ''))) {
@@ -3654,7 +4213,8 @@ function stripFontEncryptionEntries(xmlText, fontPaths) {
     if (!removed) return { modified: false };
     const remaining = doc.getElementsByTagNameNS('*', 'EncryptedData').length +
                       doc.getElementsByTagNameNS('*', 'EncryptedKey').length;
-    return remaining === 0 ? { dropFile: true } : { modified: true, xml: safeSerialize(doc, xmlText) };
+    if (remaining === 0) return { dropFile: true };
+    return { modified: true, xml: safeSerialize(doc, xmlText) };
   } catch (e) {
     return { modified: false };
   }
@@ -3662,8 +4222,8 @@ function stripFontEncryptionEntries(xmlText, fontPaths) {
 
 /**
  * Fix OPF content: fix media-types, strip svg properties,
- * update split image manifest entries, ensure cover meta.
- * DOMParser with regex fallback.
+ * update split image manifest entries, remove stripped font
+ * entries, ensure cover meta. DOMParser with regex fallback.
  */
 function fixOPF(opfText, opfOriginal, opfDir, splitImages = {}, fontPaths = null) {
   let t = opfText;
@@ -3692,6 +4252,15 @@ function fixOPF(opfText, opfOriginal, opfDir, splitImages = {}, fontPaths = null
         const newProps = props.split(/\s+/).filter(p => p !== 'svg').join(' ').trim();
         if (newProps) item.setAttribute('properties', newProps);
         else item.removeAttribute('properties');
+      }
+    }
+
+    // Remove manifest entries for stripped embedded fonts
+    if (fontPaths && fontPaths.size) {
+      for (const item of items) {
+        const href = decodeHref(item.getAttribute('href') || '');
+        const full = resolvePath((opfDir ? opfDir + '/' : '') + 'x', href);
+        if (fontPaths.has(full)) item.parentNode.removeChild(item);
       }
     }
 
@@ -3740,8 +4309,8 @@ function fixOPF(opfText, opfOriginal, opfDir, splitImages = {}, fontPaths = null
     t = t.replace(/(<(?:\w+:)?item\b[^>]*)media-type="image\/(png|gif|webp|bmp)"([^>]*href="[^"]+\.jpg")/g, '$1media-type="image/jpeg"$3');
     t = t.replace(/\s+svg(?=["'\s>])/g, '');
     if (fontPaths && fontPaths.size) {
-      for (const path of fontPaths) {
-        const href = opfDir && path.startsWith(opfDir + '/') ? path.substring(opfDir.length + 1) : path;
+      for (const p of fontPaths) {
+        const href = opfDir && p.startsWith(opfDir + '/') ? p.substring(opfDir.length + 1) : p;
         const itemRegex = new RegExp(`<(?:\\w+:)?item\\b[^>]*href=["']${escapeRegex(href)}["'][^>]*\\/?>\\s*`, 'gi');
         t = t.replace(itemRegex, '');
       }
@@ -3990,6 +4559,161 @@ function applyGrayscale(ctx, width, height) {
   ctx.putImageData(imageData, 0, 0);
 }
 
+function shouldSkipAutoCrop(imagePath, width, height, ignoreToggle = false) {
+  if (!ignoreToggle && !ENABLE_AUTO_CROP) return true;
+  if (autoCropProtectedPaths.has(imagePath)) return true;
+  if (width < MIN_CROP_DIMENSION || height < MIN_CROP_DIMENSION) return true;
+  return /(^|\/)(cover|thumbnail|thumb|icon)[^/]*\.(jpe?g|png|gif|webp|bmp)$/i.test(imagePath || '');
+}
+
+function blendedPixel(data, i) {
+  const alpha = data[i + 3] / 255;
+  return {
+    r: data[i] * alpha + 255 * (1 - alpha),
+    g: data[i + 1] * alpha + 255 * (1 - alpha),
+    b: data[i + 2] * alpha + 255 * (1 - alpha)
+  };
+}
+
+function estimateCropBackground(data, width, height) {
+  const sampleSize = Math.min(CROP_EDGE_SAMPLE_SIZE, Math.floor(width / 8), Math.floor(height / 8));
+  if (sampleSize < 2) return null;
+
+  // Use corners plus edge midpoints so colored margins work without trimming full-bleed art.
+  const samples = [];
+  const points = [
+    [0, 0],
+    [width - sampleSize, 0],
+    [0, height - sampleSize],
+    [width - sampleSize, height - sampleSize],
+    [Math.floor((width - sampleSize) / 2), 0],
+    [Math.floor((width - sampleSize) / 2), height - sampleSize],
+    [0, Math.floor((height - sampleSize) / 2)],
+    [width - sampleSize, Math.floor((height - sampleSize) / 2)]
+  ];
+
+  for (const [startX, startY] of points) {
+    let r = 0, g = 0, b = 0, count = 0;
+    for (let y = startY; y < startY + sampleSize; y++) {
+      const row = y * width * 4;
+      for (let x = startX; x < startX + sampleSize; x++) {
+        const px = blendedPixel(data, row + x * 4);
+        r += px.r; g += px.g; b += px.b; count++;
+      }
+    }
+    samples.push({ r: r / count, g: g / count, b: b / count });
+  }
+
+  const avg = samples.reduce((sum, px) => ({
+    r: sum.r + px.r,
+    g: sum.g + px.g,
+    b: sum.b + px.b
+  }), { r: 0, g: 0, b: 0 });
+  avg.r /= samples.length;
+  avg.g /= samples.length;
+  avg.b /= samples.length;
+
+  const maxSpread = samples.reduce((spread, px) => Math.max(
+    spread,
+    Math.abs(px.r - avg.r),
+    Math.abs(px.g - avg.g),
+    Math.abs(px.b - avg.b)
+  ), 0);
+
+  if (maxSpread > CROP_BACKGROUND_MAX_SPREAD) return null;
+  return avg;
+}
+
+function isCropContentPixel(px, background) {
+  if (background) {
+    return Math.abs(px.r - background.r) > CROP_BACKGROUND_TOLERANCE ||
+           Math.abs(px.g - background.g) > CROP_BACKGROUND_TOLERANCE ||
+           Math.abs(px.b - background.b) > CROP_BACKGROUND_TOLERANCE;
+  }
+  return px.r < CROP_WHITE_THRESHOLD || px.g < CROP_WHITE_THRESHOLD || px.b < CROP_WHITE_THRESHOLD;
+}
+
+function isNearWhiteBackground(background) {
+  return background &&
+         background.r >= CROP_WHITE_THRESHOLD &&
+         background.g >= CROP_WHITE_THRESHOLD &&
+         background.b >= CROP_WHITE_THRESHOLD;
+}
+
+function findNonWhiteBounds(ctx, width, height) {
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  const background = estimateCropBackground(data, width, height);
+  let left = width, top = height, right = -1, bottom = -1;
+
+  for (let y = 0; y < height; y++) {
+    const row = y * width * 4;
+    for (let x = 0; x < width; x++) {
+      const i = row + x * 4;
+      const px = blendedPixel(data, i);
+
+      if (isCropContentPixel(px, background)) {
+        if (x < left) left = x;
+        if (x > right) right = x;
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+      }
+    }
+  }
+
+  if (right < left || bottom < top) return null;
+
+  left = Math.max(0, left - CROP_PADDING_PX);
+  top = Math.max(0, top - CROP_PADDING_PX);
+  right = Math.min(width - 1, right + CROP_PADDING_PX);
+  bottom = Math.min(height - 1, bottom + CROP_PADDING_PX);
+
+  const cropW = right - left + 1;
+  const cropH = bottom - top + 1;
+  const savedRatio = 1 - ((cropW * cropH) / (width * height));
+  // Colored-background crops need a bigger win to avoid shaving illustrated pages.
+  const minSavedRatio = background && !isNearWhiteBackground(background)
+    ? MIN_COLOR_CROP_SAVINGS_RATIO
+    : MIN_CROP_SAVINGS_RATIO;
+  if (savedRatio < minSavedRatio) return null;
+
+  return { x: left, y: top, width: cropW, height: cropH };
+}
+
+function createAutoCroppedCanvas(img, imagePath, width, height, ignoreToggle = false) {
+  // Build a white-backed source canvas, detect the uniform page/background color
+  // from its edges, crop to pixels that differ from that background, then let the
+  // normal resize/rotate/split pipeline fit that cropped content to the device.
+  // If the image is a cover/icon/small asset, the edges are not uniform, or the
+  // crop would save too little, return the original canvas unchanged.
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = width;
+  sourceCanvas.height = height;
+  const sourceCtx = sourceCanvas.getContext('2d');
+  sourceCtx.fillStyle = '#FFF';
+  sourceCtx.fillRect(0, 0, width, height);
+  sourceCtx.drawImage(img, 0, 0);
+
+  if (shouldSkipAutoCrop(imagePath, width, height, ignoreToggle)) {
+    return { canvas: sourceCanvas, width, height };
+  }
+
+  const crop = findNonWhiteBounds(sourceCtx, width, height);
+  if (!crop) {
+    return { canvas: sourceCanvas, width, height };
+  }
+
+  const croppedCanvas = document.createElement('canvas');
+  croppedCanvas.width = crop.width;
+  croppedCanvas.height = crop.height;
+  const croppedCtx = croppedCanvas.getContext('2d');
+  croppedCtx.fillStyle = '#FFF';
+  croppedCtx.fillRect(0, 0, crop.width, crop.height);
+  croppedCtx.drawImage(sourceCanvas, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
+
+  return { canvas: croppedCanvas, width: crop.width, height: crop.height, crop };
+}
+
 // Process single image - returns array of {data, suffix} objects
 const IMAGE_LOAD_TIMEOUT_MS = 30000; // 30 second timeout for image loading
 async function processImage(data, imageState = 0, imagePath = '') {
@@ -4007,6 +4731,11 @@ async function processImage(data, imageState = 0, imagePath = '') {
       clearTimeout(timeoutId);
       URL.revokeObjectURL(url);
       const origW = img.width, origH = img.height;
+      const source = createAutoCroppedCanvas(img, imagePath, origW, origH);
+      const sourceCanvas = source.canvas;
+      const sourceW = source.width;
+      const sourceH = source.height;
+      const sourceWasCropped = !!source.crop;
 
       // imageState: 0=Normal, 1=H-Split (CW/CCW), 2=V-Split, 3=Rotate & Fit
       // ========================================================================
@@ -4017,9 +4746,9 @@ async function processImage(data, imageState = 0, imagePath = '') {
       // ========================================================================
       if (imageState === 1) {
         // Step 1: Scale WIDTH to 800 (this is the key difference!)
-        const scale = MAX_HEIGHT / origW;  // 800 / origW
+        const scale = MAX_HEIGHT / sourceW;  // 800 / sourceW
         const scaledW = MAX_HEIGHT;  // 800
-        const scaledH = Math.round(origH * scale);
+        const scaledH = Math.round(sourceH * scale);
 
         const scaledCanvas = document.createElement('canvas');
         scaledCanvas.width = scaledW;
@@ -4029,7 +4758,7 @@ async function processImage(data, imageState = 0, imagePath = '') {
         scaledCtx.imageSmoothingQuality = 'high';
         scaledCtx.fillStyle = '#FFF';
         scaledCtx.fillRect(0, 0, scaledW, scaledH);
-        scaledCtx.drawImage(img, 0, 0, origW, origH, 0, 0, scaledW, scaledH);
+        scaledCtx.drawImage(sourceCanvas, 0, 0, sourceW, sourceH, 0, 0, scaledW, scaledH);
 
         // Step 2: Rotate 90° CW or CCW
         const rotW = scaledH;
@@ -4142,8 +4871,8 @@ async function processImage(data, imageState = 0, imagePath = '') {
       // ========================================================================
       else if (imageState === 2) {
         // ALWAYS scale height to 800 (up or down)
-        const scale = MAX_HEIGHT / origH;  // 800 / origH
-        const scaledW = Math.round(origW * scale);
+        const scale = MAX_HEIGHT / sourceH;  // 800 / sourceH
+        const scaledW = Math.round(sourceW * scale);
         const scaledH = MAX_HEIGHT;  // Always 800
 
         const scaledCanvas = document.createElement('canvas');
@@ -4154,7 +4883,7 @@ async function processImage(data, imageState = 0, imagePath = '') {
         scaledCtx.imageSmoothingQuality = 'high';
         scaledCtx.fillStyle = '#FFF';
         scaledCtx.fillRect(0, 0, scaledW, scaledH);
-        scaledCtx.drawImage(img, 0, 0, origW, origH, 0, 0, scaledW, scaledH);
+        scaledCtx.drawImage(sourceCanvas, 0, 0, sourceW, sourceH, 0, 0, scaledW, scaledH);
         applyGrayscale(scaledCtx, scaledW, scaledH);
 
         // Check if split needed
@@ -4228,8 +4957,8 @@ async function processImage(data, imageState = 0, imagePath = '') {
       // ========================================================================
       else if (imageState === 3) {
         // Step 1: Rotate 90° based on handedness
-        const rotW = origH;
-        const rotH = origW;
+        const rotW = sourceH;
+        const rotH = sourceW;
 
         const rotCanvas = document.createElement('canvas');
         rotCanvas.width = rotW;
@@ -4246,13 +4975,13 @@ async function processImage(data, imageState = 0, imagePath = '') {
           rotCtx.translate(0, rotH);
           rotCtx.rotate(-Math.PI / 2);
         }
-        rotCtx.drawImage(img, 0, 0);
+        rotCtx.drawImage(sourceCanvas, 0, 0);
         rotCtx.setTransform(1, 0, 0, 1, 0, 0);
 
         // Step 2: Scale to fit 480x800 (if needed)
         const fitsInScreen = rotW <= MAX_WIDTH && rotH <= MAX_HEIGHT;
         
-        if (fitsInScreen) {
+        if (fitsInScreen && !sourceWasCropped) {
           // Already fits after rotation - just apply grayscale
           applyGrayscale(rotCtx, rotW, rotH);
           const blob = await new Promise(res => rotCanvas.toBlob(res, 'image/jpeg', JPEG_QUALITY / 100));
@@ -4291,30 +5020,30 @@ async function processImage(data, imageState = 0, imagePath = '') {
       // ========================================================================
       else {
         // Normal processing: check if scaling is needed
-        const fitsInScreen = origW <= MAX_WIDTH && origH <= MAX_HEIGHT;
+        const fitsInScreen = sourceW <= MAX_WIDTH && sourceH <= MAX_HEIGHT;
 
-        if (fitsInScreen) {
+        if (fitsInScreen && !sourceWasCropped) {
           // Image already fits - just convert to JPEG with grayscale
           const c = document.createElement('canvas');
-          c.width = origW;
-          c.height = origH;
+          c.width = sourceW;
+          c.height = sourceH;
           const ctx = c.getContext('2d');
           ctx.fillStyle = '#FFF';
-          ctx.fillRect(0, 0, origW, origH);
-          ctx.drawImage(img, 0, 0);
-          applyGrayscale(ctx, origW, origH);
+          ctx.fillRect(0, 0, sourceW, sourceH);
+          ctx.drawImage(sourceCanvas, 0, 0);
+          applyGrayscale(ctx, sourceW, sourceH);
 
           const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', JPEG_QUALITY / 100));
           const arrBuf = await blob.arrayBuffer();
           resolve({
-            parts: [{ data: arrBuf, suffix: '', width: origW, height: origH, size: arrBuf.byteLength }],
-            meta: { origW, origH, origSize, wasSplit: false, rotated: false, finalW: origW, finalH: origH, finalSize: arrBuf.byteLength, imageState: 0 }
+            parts: [{ data: arrBuf, suffix: '', width: sourceW, height: sourceH, size: arrBuf.byteLength }],
+            meta: { origW, origH, origSize, wasSplit: false, rotated: false, finalW: sourceW, finalH: sourceH, finalSize: arrBuf.byteLength, imageState: 0 }
           });
         } else {
           // Scale to fit 480x800
-          const scale = Math.min(MAX_WIDTH / origW, MAX_HEIGHT / origH);
-          const newW = Math.round(origW * scale);
-          const newH = Math.round(origH * scale);
+          const scale = Math.min(MAX_WIDTH / sourceW, MAX_HEIGHT / sourceH);
+          const newW = Math.round(sourceW * scale);
+          const newH = Math.round(sourceH * scale);
 
           const c = document.createElement('canvas');
           c.width = newW;
@@ -4324,7 +5053,7 @@ async function processImage(data, imageState = 0, imagePath = '') {
           ctx.imageSmoothingQuality = 'high';
           ctx.fillStyle = '#FFF';
           ctx.fillRect(0, 0, newW, newH);
-          ctx.drawImage(img, 0, 0, newW, newH);
+          ctx.drawImage(sourceCanvas, 0, 0, newW, newH);
           applyGrayscale(ctx, newW, newH);
 
           const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', JPEG_QUALITY / 100));
@@ -4353,14 +5082,12 @@ function getConvertedImageOutputPath(path, processingError) {
 async function convertEpubFile(file, progressCallback) {
   const startTime = Date.now();
   const originalSize = file.size;
-  let totalImageSize = 0;
-  let totalNewSize = 0;
 
   // Initialize logging
   clearLog();
   showLog();
   log(`<strong>${file.name}</strong> <span class="log-detail">(${formatBytes(originalSize)})</span>`, '', 'INFO');
-  log(`Quality: ${JPEG_QUALITY}% | Overlap: ${OVERLAP_PERCENT}% | Rotation: ${HANDEDNESS === 'right' ? 'CW' : 'CCW'} | Grayscale: ${ENABLE_GRAYSCALE ? 'ON' : 'OFF'}`, '', 'INFO');
+  log(`Quality: ${JPEG_QUALITY}% | Overlap: ${OVERLAP_PERCENT}% | Rotation: ${HANDEDNESS === 'right' ? 'CW' : 'CCW'} | Grayscale: ${ENABLE_GRAYSCALE ? 'ON' : 'OFF'} | Auto-crop: ${ENABLE_AUTO_CROP ? 'ON' : 'OFF'}`, '', 'INFO');
 
   const zip = await JSZip.loadAsync(file);
   const renamed = {};
@@ -4432,9 +5159,6 @@ async function convertEpubFile(file, progressCallback) {
       const origFormat = path.split('.').pop();
       logImage(imgName, meta.origW, meta.origH, origFormat, meta.origSize, meta.finalW, meta.finalH, meta.finalSize, meta.wasSplit, meta.splitCount || 0, parts, meta.imageState || 0);
 
-      totalImageSize += meta.origSize;
-      totalNewSize += meta.finalSize;
-
       if (parts.length === 1 && parts[0].suffix === '') {
         // A failed browser conversion returns the original bytes. Preserve its
         // extension and all EPUB references so the firmware does not select a
@@ -4477,7 +5201,10 @@ async function convertEpubFile(file, progressCallback) {
     if (progressCallback) progressCallback((i / entries.length) * 60);
   }
 
-  // Second pass: update XHTML using DOMParser
+  // Embedded fonts are dropped only when the fork's "strip embedded fonts" option
+  // is on (upstream always strips). Counters cover font files, @font-face rules
+  // (incl. data: URI fonts), and encryption.xml shrinkage; they count uncompressed
+  // content bytes removed (the archive-size delta is reported by logSummary).
   const stripEmbeddedFonts = document.getElementById('stripEmbeddedFonts')?.checked === true;
   const fontPaths = stripEmbeddedFonts ? collectFontPaths(zip, opfContent, opfPath) : new Set();
   let removedFontCount = 0;
@@ -4488,6 +5215,13 @@ async function convertEpubFile(file, progressCallback) {
   for (const [xhtmlPath, content] of Object.entries(xhtmlFiles)) {
     if (operationCancelled) throw new Error('Cancelled by user');
     let t = content;
+
+    const stripped = stripComments(t);
+    if (stripped.count) {
+      t = stripped.text;
+      logFix(`Comments (${stripped.count}, ${formatBytes(stripped.bytes)})`, xhtmlPath.split('/').pop());
+    }
+
     const r = fixSvgCover(t);
     if (r.fixed) { t = r.c; logFix('SVG cover', xhtmlPath.split('/').pop()); }
 
@@ -4634,11 +5368,14 @@ async function convertEpubFile(file, progressCallback) {
     }
 
     if (stripEmbeddedFonts) {
+      // Strip @font-face rules from inline <style> blocks — embedded font files
+      // are removed, so leftover rules would reference missing resources
       t = t.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi, (match, open, css, close) => {
         const stripped = stripFontFaceRules(css);
         if (!stripped.count) return match;
         removedFontFaceRules += stripped.count;
         removedFontBytes += new TextEncoder().encode(css).length - new TextEncoder().encode(stripped.css).length;
+        logFix('@font-face', `${stripped.count} rule(s) removed from ${escapeHtml(xhtmlPath.split('/').pop())}`);
         return open + stripped.css + close;
       });
     }
@@ -4679,6 +5416,7 @@ async function convertEpubFile(file, progressCallback) {
       const fontData = await fileObj.async('arraybuffer');
       removedFontCount++;
       removedFontBytes += fontData.byteLength;
+      log(`${escapeHtml(path.split('/').pop())} <span class="log-detail">(${formatBytes(fontData.byteLength)})</span>`, 'success', 'REMOVE');
       continue;
     }
 
@@ -4690,9 +5428,12 @@ async function convertEpubFile(file, progressCallback) {
       }
       if (stripEmbeddedFonts) {
         const stripped = stripFontFaceRules(t);
-        removedFontFaceRules += stripped.count;
-        removedFontBytes += new TextEncoder().encode(t).length - new TextEncoder().encode(stripped.css).length;
-        t = stripped.css;
+        if (stripped.count) {
+          removedFontFaceRules += stripped.count;
+          removedFontBytes += new TextEncoder().encode(t).length - new TextEncoder().encode(stripped.css).length;
+          t = stripped.css;
+          logFix('@font-face', `${stripped.count} rule(s) removed from ${escapeHtml(path.split('/').pop())}`);
+        }
       }
       data = new TextEncoder().encode(t);
     } else if (path === 'META-INF/encryption.xml' && fontPaths.size) {
@@ -4700,9 +5441,15 @@ async function convertEpubFile(file, progressCallback) {
       const stripped = stripFontEncryptionEntries(encryptionXml, fontPaths);
       if (stripped.dropFile) {
         removedFontBytes += data.byteLength;
+        logFix('encryption.xml', 'removed (contained only font obfuscation entries)');
         continue;
       }
-      if (stripped.modified) data = new TextEncoder().encode(stripped.xml);
+      if (stripped.modified) {
+        const encoded = new TextEncoder().encode(stripped.xml);
+        removedFontBytes += Math.max(0, data.byteLength - encoded.length);
+        data = encoded;
+        logFix('encryption.xml', 'font obfuscation entries removed');
+      }
     } else if (low.endsWith('.ncx')) {
       let t = await safeReadText(fileObj);
       for (const [o, n] of Object.entries(renamed)) {
@@ -4716,8 +5463,8 @@ async function convertEpubFile(file, progressCallback) {
     out.file(path, data, { compression: 'DEFLATE', compressionOptions: { level: 8 }, createFolders: false });
   }
 
-  if (removedFontCount || removedFontFaceRules) {
-    log(`Removed ${removedFontCount} embedded font(s), ${removedFontFaceRules} @font-face rule(s), ${formatBytes(removedFontBytes)}`, '', 'INFO');
+  if (removedFontCount > 0 || removedFontFaceRules > 0) {
+    log(`Removed ${removedFontCount} embedded font(s) and ${removedFontFaceRules} @font-face rule(s), ${formatBytes(removedFontBytes)} of font data`, '', 'INFO');
   }
 
   if (progressCallback) progressCallback(100);
@@ -4729,7 +5476,7 @@ async function convertEpubFile(file, progressCallback) {
 
   // Log completion
   log('Conversion complete!', 'success', 'DONE');
-  logSummary(totalImageSize > 0 ? totalImageSize : originalSize, totalNewSize > 0 ? totalNewSize : newSize, timeElapsed);
+  logSummary(originalSize, newSize, timeElapsed);
 
   // Auto-export only if NOT in batch mode (batch mode exports at the end)
   if (!isBatchMode && exportLogCheckbox && exportLogCheckbox.checked) {
@@ -4900,7 +5647,7 @@ function uploadFileHTTP(file, onProgress, onComplete, onError) {
   });
 }
 
-function uploadFile() {
+async function uploadFile() {
   if (isUploadInProgress) return;
 
   const fileInput = document.getElementById('fileInput');
@@ -4912,8 +5659,17 @@ function uploadFile() {
     return;
   }
 
-  // Prevent modal close during upload
   isUploadInProgress = true;
+  let usedFileNames;
+  try {
+    usedFileNames = await fetchExistingUploadNames();
+  } catch (error) {
+    isUploadInProgress = false;
+    alert('Failed to check existing files: ' + error.message);
+    return;
+  }
+
+  // Prevent modal close during upload
   uploadGeneration++;
   const myGeneration = uploadGeneration;
   document.getElementById('uploadModalClose').classList.add('disabled');
@@ -5001,6 +5757,27 @@ function uploadFile() {
     const needsConversion = isEpub && convertEnabled;
     let conversionSucceeded = false;
     let conversionFailed = false;  // Track if conversion actually failed
+    let convOriginalSize = 0;      // Picked-file size; 0 unless conversion succeeded
+    let convNewSize = 0;           // Generated blob size; 0 unless conversion succeeded
+
+    if (isEpub && document.getElementById('renameFromMetadataToggle').checked) {
+      const originalName = file.name;
+      progressText.style.color = '';
+      progressText.textContent = `Reading metadata for ${file.name} (${currentIndex + 1}/${files.length})...`;
+      file = await maybeRenameEbookFile(file);
+      if (file.name !== originalName) {
+        console.log(`[Upload] Renamed from metadata: ${originalName} -> ${file.name}`);
+      }
+    }
+
+    const availableName = reserveAvailableUploadFilename(file.name, usedFileNames);
+    if (availableName !== file.name) {
+      console.log(`[Upload] Renamed to avoid collision: ${file.name} -> ${availableName}`);
+      file = new File([file], availableName, {
+        type: file.type,
+        lastModified: file.lastModified
+      });
+    }
 
     const methodText = useWebSocket ? ' [WS]' : ' [HTTP]';
     const stageText = needsConversion ? 'Converting & uploading' : 'Uploading';
@@ -5020,7 +5797,8 @@ function uploadFile() {
       // Save file log to batch if in batch mode and this file was converted
       // Consider it successful only if conversion didn't fail
       if (useBatchLog && needsConversion) {
-        saveToFileBatchLog(file.name, !conversionFailed && conversionSucceeded);
+        const ok = !conversionFailed && conversionSucceeded;
+        saveToFileBatchLog(file.name, ok, ok ? convOriginalSize : 0, ok ? convNewSize : 0);
       }
 
       currentIndex++;
@@ -5031,7 +5809,9 @@ function uploadFile() {
       // Save failed file log to batch if in batch mode
       if (useBatchLog && needsConversion) {
         logError(`Upload failed: ${error}`);
-        saveToFileBatchLog(file.name, false);
+        // Preserve conversion size totals when the convert step succeeded but
+        // the upload failed; otherwise nothing was produced and 0/0 is correct.
+        saveToFileBatchLog(file.name, false, convOriginalSize, convNewSize);
       }
 
       failedFiles.push({ name: file.name, error: error, file: originalFile });
@@ -5076,6 +5856,10 @@ function uploadFile() {
           showLog();
         }
 
+        // Snapshot before the `file =` reassignment below, which swaps in the
+        // converted blob and makes file.size point at the optimised size.
+        const origFileSize = file.size;
+
         try {
           const convertedBlob = await convertEpubFile(file, (percent) => {
             // Pass current quality setting to converter
@@ -5086,6 +5870,8 @@ function uploadFile() {
           file = new File([convertedBlob], file.name, { type: 'application/epub+zip' });
           progressFill.style.backgroundColor = '#27ae60'; // Back to green for upload
           conversionSucceeded = true;
+          convOriginalSize = origFileSize;
+          convNewSize = convertedBlob.size;
         } catch (convError) {
           if (operationCancelled) { if (uploadGeneration === myGeneration) restoreAfterCancel(); return; }
           console.error('Conversion error:', convError);

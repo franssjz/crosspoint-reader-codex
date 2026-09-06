@@ -49,7 +49,7 @@ void persistPngFailure(const char* stage, const std::string& path, const int cod
 void* pngSleepOpen(const char* filename, int32_t* size) {
   // PNGdec retains the handle between callbacks, so it cannot live on this
   // callback's stack. pngSleepClose() owns the matching delete.
-  FsFile* f = new (std::nothrow) FsFile();
+  HalFile* f = new (std::nothrow) HalFile();
   if (!f) {
     LOG_ERR("SLP", "Failed to allocate PNG sleep file handle");
     return nullptr;
@@ -63,7 +63,7 @@ void* pngSleepOpen(const char* filename, int32_t* size) {
 }
 
 void pngSleepClose(void* handle) {
-  auto* f = reinterpret_cast<FsFile*>(handle);
+  auto* f = reinterpret_cast<HalFile*>(handle);
   if (f) {
     f->close();
     delete f;
@@ -71,12 +71,12 @@ void pngSleepClose(void* handle) {
 }
 
 int32_t pngSleepRead(PNGFILE* pFile, uint8_t* pBuf, int32_t len) {
-  auto* f = reinterpret_cast<FsFile*>(pFile->fHandle);
+  auto* f = reinterpret_cast<HalFile*>(pFile->fHandle);
   return f ? f->read(pBuf, len) : 0;
 }
 
 int32_t pngSleepSeek(PNGFILE* pFile, int32_t pos) {
-  auto* f = reinterpret_cast<FsFile*>(pFile->fHandle);
+  auto* f = reinterpret_cast<HalFile*>(pFile->fHandle);
   if (!f) return -1;
   return f->seek(pos);
 }
@@ -221,7 +221,7 @@ bool PngSleepRenderer::drawTransparentPng(const std::string& path, const GfxRend
   if (rc != PNG_SUCCESS) {
     LOG_ERR("SLP", "PNG open failed: %s (rc=%d error=%d)", path.c_str(), rc, png->getLastError());
     // PNGdec leaves an opened callback handle alive if PNGInit fails.
-    // Closing here avoids leaking both the FsFile and its SD handle.
+    // Closing here avoids leaking both the HalFile and its SD handle.
     png->close();
     delete png;
     persistPngFailure("open", path, rc);

@@ -7,7 +7,8 @@
 namespace credential_integrity {
 
 // IEEE CRC-32. This detects accidental credential corruption; it is not an
-// authentication mechanism and does not make XOR obfuscation secure.
+// authentication mechanism and does not make the existing XOR obfuscation
+// cryptographically secure.
 constexpr uint32_t crc32(const std::string_view data) {
   uint32_t crc = 0xFFFFFFFFU;
   for (const char value : data) {

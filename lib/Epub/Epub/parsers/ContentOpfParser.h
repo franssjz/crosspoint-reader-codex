@@ -29,7 +29,7 @@ class ContentOpfParser final : public Print {
   XML_Parser parser = nullptr;
   ParserState state = START;
   BookMetadataCache* cache;
-  FsFile tempItemStore;
+  HalFile tempItemStore;
   std::string coverItemId;
   bool hasExplicitStartReference = false;
 

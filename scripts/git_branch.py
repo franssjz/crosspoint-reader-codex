@@ -2,8 +2,11 @@
 PlatformIO pre-build script for CPR-vCodex versioning.
 
 Version scheme:
-  - default/dev builds:  <base>.<release>.dev<dev_counter>
-  - gh_release builds:   <base>.<release>
+  - default/dev builds:  <base>.<release>.dev<dev_counter>-<sha>
+  - x4pro dev builds:    <base>.<release>.dev<dev_counter>-<sha>-x4pro
+  - gh_release builds:   <base>.<release>   (also x4pro-gh_release; the
+                         "-x4pro" artifact suffix is added by
+                         package_vcodex_bin.py, never to the version string)
 
 Release builds intentionally do not persist the release counter in this
 pre-build script. The post-build packaging script advances the counter only
@@ -31,7 +34,17 @@ RELEASE_COUNTER_FILE_TEMPLATE = ".release-counter-{base}.txt"
 DEV_COUNTER_FILE_TEMPLATE = ".dev-counter-{base}-r{release}.txt"
 BUILD_VERSION_JSON_REL = os.path.join(COUNTER_DIR, "build-version.json")
 VERSION_INC_REL = os.path.join("src", "version.generated.inc")
-SUPPORTED_ENVS = ("default", "gh_release", "gh_release_rc", "slim")
+X4PRO_ENV_PREFIX = "x4pro"
+X4PRO_VERSION_SUFFIX = "-x4pro"
+SUPPORTED_ENVS = (
+    "default",
+    "gh_release",
+    "gh_release_rc",
+    "slim",
+    "x4pro",
+    "x4pro-gh_release",
+    "x4pro-gh_release_rc",
+)
 INITIAL_RELEASE_NUMBER = 0
 
 
@@ -247,22 +260,60 @@ def next_dev_counter(project_dir, base_version, release_number):
     return next_value, counter_path
 
 
+def split_env_name(env_name):
+    """Map a PlatformIO env to (base_kind_env, is_x4pro).
+
+    "x4pro" is the ESP32-S3 counterpart of "default"; "x4pro-gh_release" and
+    "x4pro-gh_release_rc" mirror the C3 release envs. The tag-driven release
+    number logic is shared so both targets carry the same release version.
+    """
+    if env_name == X4PRO_ENV_PREFIX:
+        return "default", True
+    prefix = X4PRO_ENV_PREFIX + "-"
+    if env_name.startswith(prefix):
+        return env_name[len(prefix):], True
+    return env_name, False
+
+
 def inject_version(env):
     env_name = env["PIOENV"]
+    if env_name.startswith("simulator"):
+        # Desktop simulator builds: stable version string, no release/dev counters.
+        project_dir = env["PROJECT_DIR"]
+        base_version = get_base_version(project_dir)
+        short_sha = get_git_short_sha(project_dir)
+        version_string = f"{base_version}.sim-{short_sha}"
+        write_version_artifacts(
+            project_dir,
+            environment=env_name,
+            version_string=version_string,
+            base_version=base_version,
+            build_counter=0,
+            release_number=0,
+            build_kind="simulator",
+        )
+        env.Append(CPPDEFINES=[("CPR_VCODEX_BUILD_KIND_SIMULATOR", 1)])
+        print(f"CPR-vCodex build version: {version_string}")
+        return
     if env_name not in SUPPORTED_ENVS:
         return
 
     project_dir = env["PROJECT_DIR"]
     base_version = get_base_version(project_dir)
+    kind_env, is_x4pro = split_env_name(env_name)
+    kind_suffix = X4PRO_VERSION_SUFFIX if is_x4pro else ""
 
-    if env_name == "default":
+    if kind_env == "default":
         release_number, release_counter_path = get_dev_release_number(project_dir, base_version)
         build_counter, counter_path = next_dev_counter(project_dir, base_version, release_number)
         short_sha = get_git_short_sha(project_dir)
-        version_string = f"{base_version}.{release_number}.dev{build_counter}-{short_sha}"
-        build_kind = "dev"
+        # Dev builds of both targets share the release line and dev counter;
+        # the x4pro suffix keeps the version strings (and packaged artifact
+        # names) distinct so S3 and C3 dev binaries never collide.
+        version_string = f"{base_version}.{release_number}.dev{build_counter}-{short_sha}{kind_suffix}"
+        build_kind = "dev" + kind_suffix
         print(f"CPR-vCodex release line: {release_number} ({release_counter_path})")
-    elif env_name == "gh_release":
+    elif kind_env == "gh_release":
         tagged_release = release_number_from_tag(base_version)
         if tagged_release:
             release_number, tag = tagged_release
@@ -270,14 +321,16 @@ def inject_version(env):
         else:
             release_number, counter_path = preview_next_release_number(project_dir, base_version)
         build_counter = release_number
+        # Release version strings are identical for C3 and X4 Pro: the tag is
+        # shared and package_vcodex_bin.py adds the "-x4pro" artifact suffix.
         version_string = f"{base_version}.{release_number}"
-        build_kind = "release"
-    elif env_name == "gh_release_rc":
+        build_kind = "release" + kind_suffix
+    elif kind_env == "gh_release_rc":
         rc_hash = os.environ.get("CROSSPOINT_RC_HASH", "unknown")
         release_number, release_counter_path = get_current_release_number(project_dir, base_version)
         build_counter = release_number
         version_string = f"{base_version}-rc+{rc_hash}"
-        build_kind = "rc"
+        build_kind = "rc" + kind_suffix
         counter_path = "CROSSPOINT_RC_HASH env"
         print(f"CPR-vCodex release line: {release_number} ({release_counter_path})")
     else:

@@ -4,6 +4,7 @@
 #include <Epub.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -13,6 +14,7 @@
 #include <Xtc.h>
 
 #include <algorithm>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -90,8 +92,8 @@ void updateHomeBookMetadata(const RecentBook& book) {
 }
 
 bool canLoadHomeCover(const std::string& path) {
-  return FsHelpers::hasEpubExtension(path) || FsHelpers::hasXtcExtension(path) ||
-         FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path);
+  return FsHelpers::hasEpubExtension(path) || FsHelpers::hasXtcExtension(path) || FsHelpers::hasTxtExtension(path) ||
+         FsHelpers::hasMarkdownExtension(path);
 }
 
 bool isValidBmpFile(const std::string& path) {
@@ -99,7 +101,7 @@ bool isValidBmpFile(const std::string& path) {
     return false;
   }
 
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("HOME", path, file)) {
     return false;
   }
@@ -366,6 +368,26 @@ int getHomeShortcutPageSize() {
              : DEFAULT_HOME_SHORTCUT_PAGE_SIZE;
 }
 
+bool shortcutMatchesMenuItem(const HomeShortcutEntry& entry, const HomeMenuItem item) {
+  if (entry.isAppsHub || entry.definition == nullptr) {
+    return false;
+  }
+  switch (item) {
+    case HomeMenuItem::FILE_BROWSER:
+      return entry.definition->id == ShortcutId::BrowseFiles;
+    case HomeMenuItem::RECENTS:
+      return entry.definition->id == ShortcutId::RecentBooks;
+    case HomeMenuItem::OPDS_BROWSER:
+      return entry.definition->id == ShortcutId::OpdsBrowser;
+    case HomeMenuItem::FILE_TRANSFER:
+      return entry.definition->id == ShortcutId::FileTransfer;
+    case HomeMenuItem::SETTINGS_MENU:
+      return entry.definition->id == ShortcutId::Settings;
+    default:
+      return false;
+  }
+}
+
 }  // namespace
 
 int HomeActivity::getMenuItemCount() const {
@@ -442,8 +464,8 @@ bool HomeActivity::needsRecentCoverLoad(const int coverHeight) const {
       return true;
     }
 
-    const bool missingThumb = isLyraCarouselTheme() ? !hasCarouselUsableThumb(book)
-                                                    : !isValidHomeCoverPath(book.coverBmpPath, coverHeight);
+    const bool missingThumb =
+        isLyraCarouselTheme() ? !hasCarouselUsableThumb(book) : !isValidHomeCoverPath(book.coverBmpPath, coverHeight);
     if (missingThumb) {
       return true;
     }
@@ -610,7 +632,32 @@ void HomeActivity::onEnter() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   reloadHomeBooks(metrics.homeRecentBooksCount);
 
+  // Land on the shortcut the user came back from (ActivityManager::goHome).
+  if (initialMenuItem != HomeMenuItem::NONE) {
+    selectorIndex = indexForMenuItem(initialMenuItem);
+    if (isLyraCarouselTheme() && !recentBooks.empty() && selectorIndex >= static_cast<int>(recentBooks.size())) {
+      lastCarouselBookIndex = 0;
+    }
+  }
+
   requestUpdate();
+}
+
+int HomeActivity::indexForMenuItem(const HomeMenuItem item) const {
+  if (item == HomeMenuItem::NONE) {
+    return 0;
+  }
+  auto entries = getHomeShortcutEntries(hasOpdsServers);
+  if (isLyraCarouselTheme()) {
+    entries = buildCarouselEntries(entries);
+  }
+  for (size_t i = 0; i < entries.size(); i++) {
+    if (shortcutMatchesMenuItem(entries[i], item)) {
+      return static_cast<int>(recentBooks.size()) + static_cast<int>(i);
+    }
+  }
+  // The shortcut is not on Home (moved to Apps): fall back to the first entry.
+  return 0;
 }
 
 void HomeActivity::onExit() {
@@ -666,7 +713,7 @@ bool HomeActivity::loadCarouselFrameFromStorage(int bookIndex) {
   const size_t bufferSize = renderer.getBufferSize();
   const std::string cachePath = getCarouselFrameCachePathFromHash(getCachedCarouselFrameHash(safeBookIndex));
 
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("HCR", cachePath, file)) {
     return false;
   }
@@ -722,7 +769,7 @@ bool HomeActivity::saveCarouselFrameToStorage(int bookIndex) {
   Storage.mkdir("/.crosspoint");
   Storage.mkdir(CAROUSEL_FRAME_CACHE_DIR);
 
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForWrite("HCR", cachePath, file)) {
     return false;
   }
@@ -833,12 +880,8 @@ void HomeActivity::loop() {
   }
 
   const int menuCount = getMenuItemCount();
-  auto homeEntries = getHomeShortcutEntries(hasOpdsServers);
-  if (isLyraCarouselTheme()) {
-    homeEntries = buildCarouselEntries(homeEntries);
-  }
   const int recentCount = static_cast<int>(recentBooks.size());
-  const int homeCount = static_cast<int>(homeEntries.size());
+  const int homeCount = std::max(0, menuCount - recentCount);
   const int shortcutPageSize = getHomeShortcutPageSize();
 
   if (isLyraCarouselTheme()) {
@@ -899,8 +942,7 @@ void HomeActivity::loop() {
         selectorIndex = recentCount;
       } else {
         const int selectedHomeIndex = selectorIndex - recentCount;
-        selectorIndex =
-            recentCount + ButtonNavigator::nextPageIndex(selectedHomeIndex, homeCount, shortcutPageSize);
+        selectorIndex = recentCount + ButtonNavigator::nextPageIndex(selectedHomeIndex, homeCount, shortcutPageSize);
       }
       requestUpdate();
     });
@@ -923,125 +965,323 @@ void HomeActivity::loop() {
     });
   }
 
+  // Touch: swipes move the selection, taps select/open covers and shortcuts.
+  if (handleTouch()) {
+    return;
+  }
+
+  // Back is otherwise unused on Home: resume the most recent book directly
+  // (recentBooks is most-recent-first and already pruned of missing files).
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back) && !recentBooks.empty() &&
+      mappedInput.getHeldTime() < RECENT_BOOK_LONG_PRESS_MS) {
+    onSelectBook(recentBooks[0].path);
+    return;
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (selectorIndex < recentBooks.size()) {
-      if (mappedInput.getHeldTime() >= RECENT_BOOK_LONG_PRESS_MS) {
-        const RecentBook selectedBook = recentBooks[selectorIndex];
-        const int currentSelection = selectorIndex;
-        const bool deleteFromFavorites = homeUsesFavorites();
-        const StrId confirmationPrompt =
-            deleteFromFavorites ? StrId::STR_DELETE_FROM_FAVORITES : StrId::STR_DELETE_FROM_RECENTS;
-        startActivityForResult(
-            std::make_unique<ConfirmationActivity>(renderer, mappedInput, I18N.get(confirmationPrompt),
-                                                   getRecentBookConfirmationLabel(selectedBook)),
-            [this, selectedBook, currentSelection, deleteFromFavorites](const ActivityResult& result) {
-              if (isLyraCarouselTheme()) {
-                invalidateResidentCarouselFrame();
-              }
-
-              if (result.isCancelled) {
-                requestUpdate(true);
-                return;
-              }
-
-              const bool removed = deleteFromFavorites ? FAVORITES.removeBook(selectedBook.path)
-                                                       : RECENT_BOOKS.removeBook(selectedBook.path);
-              if (removed) {
-                const auto& metrics = UITheme::getInstance().getMetrics();
-                reloadHomeBooks(metrics.homeRecentBooksCount);
-                if (recentBooks.empty()) {
-                  selectorIndex = 0;
-                } else if (currentSelection >= static_cast<int>(recentBooks.size())) {
-                  selectorIndex = static_cast<int>(recentBooks.size()) - 1;
-                } else {
-                  selectorIndex = currentSelection;
-                }
-                if (isLyraCarouselTheme()) {
-                  lastCarouselBookIndex = selectorIndex < static_cast<int>(recentBooks.size()) ? selectorIndex : 0;
-                  preRenderCarouselFrames();
-                }
-              }
-              requestUpdate(true);
-            });
-        return;
-      }
-
-      onSelectBook(recentBooks[selectorIndex].path);
+    if (selectorIndex < static_cast<int>(recentBooks.size()) &&
+        mappedInput.getHeldTime() >= RECENT_BOOK_LONG_PRESS_MS) {
+      promptRemoveSelectedBook();
       return;
     }
+    activateSelection();
+  }
+}
 
-    const int homeIndex = selectorIndex - static_cast<int>(recentBooks.size());
-    if (homeIndex < 0 || homeIndex >= static_cast<int>(homeEntries.size())) {
+bool HomeActivity::handleTouch() {
+  if (!mappedInput.hasTouch()) {
+    return false;
+  }
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int menuCount = getMenuItemCount();
+  const int recentCount = static_cast<int>(recentBooks.size());
+  const bool carouselTheme = isLyraCarouselTheme();
+  auto homeEntries = getHomeShortcutEntries(hasOpdsServers);
+  if (carouselTheme) {
+    homeEntries = buildCarouselEntries(homeEntries);
+  }
+  const int homeCount = static_cast<int>(homeEntries.size());
+  const bool inCarouselRow = carouselTheme && recentCount > 0 && selectorIndex < recentCount;
+
+  // Swipes: vertical moves the selection (or toggles carousel rows); horizontal
+  // walks the focused carousel row.
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe != MappedInputManager::SwipeDir::None) {
+    if (carouselTheme) {
+      if (swipe == MappedInputManager::SwipeDir::Left || swipe == MappedInputManager::SwipeDir::Right) {
+        // Swiping left reveals the next item (content follows the finger).
+        const int step = swipe == MappedInputManager::SwipeDir::Left ? 1 : -1;
+        if (inCarouselRow) {
+          selectorIndex = wrapBookIndex(selectorIndex + step, recentCount);
+        } else if (homeCount > 0) {
+          const int homeIdx = selectorIndex - recentCount;
+          selectorIndex = recentCount + wrapBookIndex(homeIdx + step, homeCount);
+        }
+      } else if (inCarouselRow && homeCount > 0) {
+        lastCarouselBookIndex = selectorIndex;
+        selectorIndex = recentCount;
+      } else if (!inCarouselRow && recentCount > 0) {
+        selectorIndex = wrapBookIndex(lastCarouselBookIndex, recentCount);
+      }
+    } else if (swipe == MappedInputManager::SwipeDir::Up) {
+      selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
+    } else if (swipe == MappedInputManager::SwipeDir::Down) {
+      selectorIndex = ButtonNavigator::previousIndex(selectorIndex, menuCount);
+    } else {
+      return false;
+    }
+    requestUpdate();
+    return true;
+  }
+
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  const auto select = [this](const int index, const MappedInputManager::RowTouch touch) {
+    if (touch == MappedInputManager::RowTouch::Down) {
+      if (selectorIndex != index) {
+        selectorIndex = index;
+        requestUpdate();
+      }
       return;
     }
+    selectorIndex = index;
+    activateSelection();
+  };
 
-    const auto& selectedEntry = homeEntries[homeIndex];
-    if (selectedEntry.isAppsHub) {
-      onAppsOpen();
-    } else if (selectedEntry.definition) {
-      switch (selectedEntry.definition->id) {
-        case ShortcutId::BrowseFiles:
-          onFileBrowserOpen();
-          break;
-        case ShortcutId::ReadingStats:
-          onReadingStatsOpen();
-          break;
-        case ShortcutId::SyncDay:
-          onSyncDayOpen();
-          break;
-        case ShortcutId::Settings:
-          activityManager.goToSettings();
-          break;
-        case ShortcutId::ReadingHeatmap:
-          startActivityForResult(std::make_unique<ReadingHeatmapActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult&) { requestFreshHomeRender(true); });
-          break;
-        case ShortcutId::ReadingProfile:
-          startActivityForResult(std::make_unique<ReadingProfileActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult&) { requestFreshHomeRender(true); });
-          break;
-        case ShortcutId::Achievements:
-          startActivityForResult(std::make_unique<AchievementsActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult&) { requestFreshHomeRender(true); });
-          break;
-        case ShortcutId::IfFound:
-          startActivityForResult(std::make_unique<IfFoundActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult&) { requestFreshHomeRender(true); });
-          break;
-        case ShortcutId::RecentBooks:
-          activityManager.goToRecentBooks();
-          break;
-        case ShortcutId::Bookmarks:
-          startActivityForResult(std::make_unique<BookmarksAppActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult&) { requestFreshHomeRender(true); });
-          break;
-        case ShortcutId::Favorites:
-          startActivityForResult(std::make_unique<FavoritesAppActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult&) {
-                                   const auto& metrics = UITheme::getInstance().getMetrics();
-                                   reloadHomeBooks(metrics.homeRecentBooksCount);
-                                   requestFreshHomeRender(true);
-                                 });
-          break;
-        case ShortcutId::Flashcards:
-          startActivityForResult(std::make_unique<FlashcardsAppActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult&) { requestFreshHomeRender(true); });
-          break;
-        case ShortcutId::Dictionary:
-          startActivityForResult(std::make_unique<DictionaryActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult&) { requestFreshHomeRender(true); });
-          break;
-        case ShortcutId::FileTransfer:
-          activityManager.goToFileTransfer();
-          break;
-        case ShortcutId::Sleep:
-          startActivityForResult(std::make_unique<SleepAppActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult&) { requestFreshHomeRender(true); });
-          break;
-        case ShortcutId::OpdsBrowser:
-          onOpdsBrowserOpen();
-          break;
+  // Cover tile(s): one column per visible book. On the carousel the centre
+  // cover's column opens the focused book and the side-cover columns step the
+  // carousel (column edges come from the theme's drawn cover geometry).
+  if (recentCount > 0) {
+    const int tileTop = metrics.homeTopPadding;
+    int tileBottom = metrics.homeTopPadding + metrics.homeCoverTileHeight;
+    if (carouselTheme) {
+      // The tall carousel tile can run into the icon band; the band wins there.
+      tileBottom = std::min(tileBottom, LyraCarouselTheme::menuBandRect(renderer).y);
+      int tx = 0;
+      int ty = 0;
+      if (mappedInput.wasScreenTapped(tx, ty)) {
+        if (ty >= tileTop && ty < tileBottom) {
+          const int column = LyraCarouselTheme::coverColumnAt(renderer, tx);
+          const int center = wrapBookIndex(lastCarouselBookIndex, recentCount);
+          if (column == 0) {
+            selectorIndex = center;
+            activateSelection();
+          } else {
+            selectorIndex = wrapBookIndex(center + column, recentCount);
+            requestUpdate();
+          }
+          return true;
+        }
+      } else if (mappedInput.wasScreenTouchDown(tx, ty) && ty >= tileTop && ty < tileBottom) {
+        return true;  // no pre-select on the carousel; the tap decides
       }
+    } else {
+      const int coverColumnCount = std::max(1, metrics.homeRecentBooksCount);
+      const int visibleBooks = std::min(recentCount, coverColumnCount);
+      const int coverColumnWidth = (pageWidth - 2 * metrics.contentSidePadding) / coverColumnCount;
+      int touchedBook = -1;
+      const auto coverTouch = mappedInput.colTouch(touchedBook, metrics.contentSidePadding, coverColumnWidth,
+                                                   visibleBooks, tileTop, tileBottom, coverColumnWidth);
+      if (coverTouch != MappedInputManager::RowTouch::None) {
+        select(touchedBook, coverTouch);
+        return true;
+      }
+    }
+  }
+
+  if (homeCount <= 0) {
+    return false;
+  }
+
+  if (carouselTheme) {
+    // Bottom icon band: a sliding window of up to five shortcuts centred on the
+    // selection; geometry shared with LyraCarouselTheme::drawButtonMenu.
+    const int visibleCount = std::min(homeCount, LyraCarouselTheme::kVisibleMenuSlots);
+    const int windowStart = LyraCarouselTheme::menuWindowStart(homeCount, selectorIndex - recentCount);
+    const Rect band = LyraCarouselTheme::menuBandRect(renderer);
+    const int tileW = band.width / visibleCount;
+    int slot = -1;
+    const auto menuTouch = mappedInput.colTouch(slot, band.x, tileW, visibleCount, band.y, band.y + band.height, tileW);
+    if (menuTouch != MappedInputManager::RowTouch::None) {
+      // Tap only: pre-selecting on touch-down would re-centre the window and
+      // slide a different shortcut under the finger before the release.
+      if (menuTouch == MappedInputManager::RowTouch::Tap) {
+        selectorIndex = recentCount + windowStart + slot;
+        activateSelection();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  // Shortcut rows: same geometry as render(): a button menu below the cover
+  // tile, paged with a sub-header once the entries exceed a page.
+  const Rect shortcutsRect{
+      0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing, pageWidth,
+      pageHeight - (metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing +
+                    metrics.buttonHintsHeight + metrics.verticalSpacing)};
+  const int shortcutPageSize = getHomeShortcutPageSize();
+  int listTop = shortcutsRect.y;
+  int listHeight = shortcutsRect.height;
+  int pageStart = 0;
+  int pageItemCount = homeCount;
+  if (homeCount > shortcutPageSize) {
+    const int headerHeight = 34;
+    listTop = shortcutsRect.y + headerHeight + 12;
+    listHeight = std::max(0, shortcutsRect.height - headerHeight - 12);
+    const int selectedHomeIndex = selectorIndex - recentCount;
+    const int currentPage = std::max(0, selectedHomeIndex >= 0 ? selectedHomeIndex / shortcutPageSize : 0);
+    pageStart = currentPage * shortcutPageSize;
+    pageItemCount = std::min(shortcutPageSize, homeCount - pageStart);
+  }
+  if (pageItemCount <= 0) {
+    return false;
+  }
+  // Row height as drawn by the theme (rows shrink when they do not all fit).
+  const int gap = metrics.menuSpacing;
+  const int rowHeight =
+      std::min(GUI.getMenuRowHeight(renderer), (listHeight - gap * std::max(0, pageItemCount - 1)) / pageItemCount);
+  if (rowHeight <= 0) {
+    return false;
+  }
+  int menuRow = -1;
+  const auto menuTouch =
+      mappedInput.rowTouch(menuRow, listTop, rowHeight + gap, pageItemCount, 0, INT32_MAX, rowHeight);
+  if (menuTouch != MappedInputManager::RowTouch::None) {
+    select(recentCount + pageStart + menuRow, menuTouch);
+    return true;
+  }
+  return false;
+}
+
+void HomeActivity::promptRemoveSelectedBook() {
+  if (selectorIndex < 0 || selectorIndex >= static_cast<int>(recentBooks.size())) {
+    return;
+  }
+  const RecentBook selectedBook = recentBooks[selectorIndex];
+  const int currentSelection = selectorIndex;
+  const bool deleteFromFavorites = homeUsesFavorites();
+  const StrId confirmationPrompt =
+      deleteFromFavorites ? StrId::STR_DELETE_FROM_FAVORITES : StrId::STR_DELETE_FROM_RECENTS;
+  startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, I18N.get(confirmationPrompt),
+                                                                getRecentBookConfirmationLabel(selectedBook)),
+                         [this, selectedBook, currentSelection, deleteFromFavorites](const ActivityResult& result) {
+                           if (isLyraCarouselTheme()) {
+                             invalidateResidentCarouselFrame();
+                           }
+
+                           if (result.isCancelled) {
+                             requestUpdate(true);
+                             return;
+                           }
+
+                           const bool removed = deleteFromFavorites ? FAVORITES.removeBook(selectedBook.path)
+                                                                    : RECENT_BOOKS.removeBook(selectedBook.path);
+                           if (removed) {
+                             const auto& metrics = UITheme::getInstance().getMetrics();
+                             reloadHomeBooks(metrics.homeRecentBooksCount);
+                             if (recentBooks.empty()) {
+                               selectorIndex = 0;
+                             } else if (currentSelection >= static_cast<int>(recentBooks.size())) {
+                               selectorIndex = static_cast<int>(recentBooks.size()) - 1;
+                             } else {
+                               selectorIndex = currentSelection;
+                             }
+                             if (isLyraCarouselTheme()) {
+                               lastCarouselBookIndex =
+                                   selectorIndex < static_cast<int>(recentBooks.size()) ? selectorIndex : 0;
+                               preRenderCarouselFrames();
+                             }
+                           }
+                           requestUpdate(true);
+                         });
+}
+
+void HomeActivity::activateSelection() {
+  if (selectorIndex < 0) {
+    return;
+  }
+  if (selectorIndex < static_cast<int>(recentBooks.size())) {
+    onSelectBook(recentBooks[selectorIndex].path);
+    return;
+  }
+
+  auto homeEntries = getHomeShortcutEntries(hasOpdsServers);
+  if (isLyraCarouselTheme()) {
+    homeEntries = buildCarouselEntries(homeEntries);
+  }
+  const int homeIndex = selectorIndex - static_cast<int>(recentBooks.size());
+  if (homeIndex < 0 || homeIndex >= static_cast<int>(homeEntries.size())) {
+    return;
+  }
+
+  const auto& selectedEntry = homeEntries[homeIndex];
+  if (selectedEntry.isAppsHub) {
+    onAppsOpen();
+  } else if (selectedEntry.definition) {
+    switch (selectedEntry.definition->id) {
+      case ShortcutId::BrowseFiles:
+        onFileBrowserOpen();
+        break;
+      case ShortcutId::ReadingStats:
+        onReadingStatsOpen();
+        break;
+      case ShortcutId::SyncDay:
+        onSyncDayOpen();
+        break;
+      case ShortcutId::Settings:
+        activityManager.goToSettings();
+        break;
+      case ShortcutId::ReadingHeatmap:
+        startActivityForResult(std::make_unique<ReadingHeatmapActivity>(renderer, mappedInput),
+                               [this](const ActivityResult&) { requestFreshHomeRender(true); });
+        break;
+      case ShortcutId::ReadingProfile:
+        startActivityForResult(std::make_unique<ReadingProfileActivity>(renderer, mappedInput),
+                               [this](const ActivityResult&) { requestFreshHomeRender(true); });
+        break;
+      case ShortcutId::Achievements:
+        startActivityForResult(std::make_unique<AchievementsActivity>(renderer, mappedInput),
+                               [this](const ActivityResult&) { requestFreshHomeRender(true); });
+        break;
+      case ShortcutId::IfFound:
+        startActivityForResult(std::make_unique<IfFoundActivity>(renderer, mappedInput),
+                               [this](const ActivityResult&) { requestFreshHomeRender(true); });
+        break;
+      case ShortcutId::RecentBooks:
+        activityManager.goToRecentBooks();
+        break;
+      case ShortcutId::Bookmarks:
+        startActivityForResult(std::make_unique<BookmarksAppActivity>(renderer, mappedInput),
+                               [this](const ActivityResult&) { requestFreshHomeRender(true); });
+        break;
+      case ShortcutId::Favorites:
+        startActivityForResult(std::make_unique<FavoritesAppActivity>(renderer, mappedInput),
+                               [this](const ActivityResult&) {
+                                 const auto& metrics = UITheme::getInstance().getMetrics();
+                                 reloadHomeBooks(metrics.homeRecentBooksCount);
+                                 requestFreshHomeRender(true);
+                               });
+        break;
+      case ShortcutId::Flashcards:
+        startActivityForResult(std::make_unique<FlashcardsAppActivity>(renderer, mappedInput),
+                               [this](const ActivityResult&) { requestFreshHomeRender(true); });
+        break;
+      case ShortcutId::Dictionary:
+        startActivityForResult(std::make_unique<DictionaryActivity>(renderer, mappedInput),
+                               [this](const ActivityResult&) { requestFreshHomeRender(true); });
+        break;
+      case ShortcutId::FileTransfer:
+        activityManager.goToFileTransfer();
+        break;
+      case ShortcutId::Sleep:
+        startActivityForResult(std::make_unique<SleepAppActivity>(renderer, mappedInput),
+                               [this](const ActivityResult&) { requestFreshHomeRender(true); });
+        break;
+      case ShortcutId::OpdsBrowser:
+        onOpdsBrowserOpen();
+        break;
     }
   }
 }
@@ -1101,8 +1341,8 @@ void HomeActivity::render(RenderLock&&) {
     coverRectY = metrics.homeTopPadding;
     coverRectW = pageWidth;
     coverRectH = metrics.homeCoverTileHeight;
-    GUI.drawRecentBookCover(renderer, Rect{coverRectX, coverRectY, coverRectW, coverRectH},
-                            recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
+    GUI.drawRecentBookCover(renderer, Rect{coverRectX, coverRectY, coverRectW, coverRectH}, recentBooks, selectorIndex,
+                            coverRendered, coverBufferStored, bufferRestored,
                             std::bind(&HomeActivity::storeCoverBuffer, this));
   }
 
@@ -1131,8 +1371,7 @@ void HomeActivity::render(RenderLock&&) {
     const int listTop = shortcutsRect.y + headerHeight + 12;
     const int listHeight = std::max(0, shortcutsRect.height - headerHeight - 12);
     const int currentPage = std::max(0, selectedHomeIndex >= 0 ? selectedHomeIndex / shortcutPageSize : 0);
-    const int totalPages =
-        (static_cast<int>(homeEntries.size()) + shortcutPageSize - 1) / shortcutPageSize;
+    const int totalPages = (static_cast<int>(homeEntries.size()) + shortcutPageSize - 1) / shortcutPageSize;
     const int pageStart = currentPage * shortcutPageSize;
     const int pageItemCount = std::min(shortcutPageSize, static_cast<int>(homeEntries.size()) - pageStart);
     const int localSelectedIndex = (selectedHomeIndex >= pageStart && selectedHomeIndex < pageStart + pageItemCount)
@@ -1156,11 +1395,18 @@ void HomeActivity::render(RenderLock&&) {
         });
   }
 
-  const auto labels = carouselTheme ? mappedInput.mapLabels("", tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT))
-                                    : mappedInput.mapLabels("", tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const char* backLabel = recentBooks.empty() ? "" : tr(STR_RESUME);
+  const auto labels = carouselTheme
+                          ? mappedInput.mapLabels(backLabel, tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT))
+                          : mappedInput.mapLabels(backLabel, tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  renderer.displayBuffer();
+  if (cleanInitialRefresh && !firstRenderDone) {
+    // Wake / home-gesture entry: one HALF refresh clears the retained frame.
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  } else {
+    renderer.displayBuffer();
+  }
 
   if (wasFirstRenderDone && carouselTheme && recentsLoaded && !carouselFramesReady && !recentBooks.empty()) {
     preRenderCarouselFrames();

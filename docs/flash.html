@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Flash CPR-vCodex firmware to an Xteink X3 or X4 using a browser-based Web Serial installer.">
+  <meta name="description" content="Flash CPR-vCodex firmware to an Xteink X4, X3 or X4 Pro using a browser-based Web Serial installer.">
   <title>Auto Flash - CPR-vCodex</title>
   <link rel="stylesheet" href="assets/site.css">
   <style>
@@ -248,11 +248,15 @@
       font-weight: 700;
     }
 
-    .device-unsupported-note {
+    .device-note {
       margin: 10px 0 0;
       color: var(--warning);
       font-size: 13px;
       font-weight: 700;
+    }
+
+    .device-note[hidden] {
+      display: none;
     }
 
     .version-box {
@@ -499,7 +503,7 @@
     <section class="hero">
       <p class="eyebrow" data-site-i18n="flashEyebrow">Browser-based installer</p>
       <h1 data-site-i18n="flashTitle">Flash CPR-vCodex</h1>
-      <p data-site-i18n="flashSubtitle">Install the latest CPR-vCodex firmware on your Xteink X3 or X4 from Chrome or Edge using Web Serial. It writes the inactive app partition and then switches boot to it.</p>
+      <p data-site-i18n="flashSubtitle">Install the latest CPR-vCodex firmware on your Xteink X4, X3 or X4 Pro from Chrome or Edge using Web Serial. It writes the inactive app partition and then switches boot to it.</p>
     </section>
 
     <section class="grid">
@@ -515,13 +519,13 @@
           <div class="step">
             <div>
               <h3 data-site-i18n="cableTitle">Use a data USB-C cable</h3>
-              <p data-site-i18n="cableText">Connect the Xteink X3 or X4 to your computer. If no serial port appears, wake and unlock the device, then reconnect it.</p>
+              <p data-site-i18n="cableText">Connect the Xteink to your computer. If no serial port appears, wake and unlock the device, then reconnect it. On the X4 Pro, unplug and replug the cable and hold Power if the port does not show up.</p>
             </div>
           </div>
           <div class="step">
             <div>
               <h3 data-site-i18n="browserTitle">Use Chrome or Edge on desktop</h3>
-              <p data-site-i18n="browserText">Firefox and Safari do not support Web Serial. The browser will ask you to choose the ESP32-C3 USB serial port.</p>
+              <p data-site-i18n="browserText">Firefox and Safari do not support Web Serial. The browser will ask you to choose the Xteink USB serial port (ESP32-C3 on the X4 and X3, ESP32-S3 on the X4 Pro).</p>
             </div>
           </div>
           <div class="step">
@@ -536,22 +540,22 @@
       <aside class="card flash-panel">
         <div class="device-box">
           <span class="device-label" id="device-model-title" data-site-i18n="deviceModelTitle">Device model</span>
-          <p data-site-i18n="deviceModelText">Choose the exact model before flashing. X3 and X4 use different OTA app partition sizes.</p>
+          <p data-site-i18n="deviceModelText">Choose the exact model before flashing. X3 and X4 share one ESP32-C3 image with different OTA slot sizes; the X4 Pro is an ESP32-S3 with its own firmware. The page checks the connected chip before writing.</p>
           <div class="device-options" role="radiogroup" aria-labelledby="device-model-title">
             <button class="device-option" type="button" role="radio" aria-checked="true" data-device="x4">
               <strong data-site-i18n="deviceX4">Xteink X4</strong>
-              <span>ESP32-C3 · 6.4 MB OTA slot</span>
+              <span data-site-i18n="deviceX4Slot">ESP32-C3 · 6.4 MB OTA slot</span>
             </button>
             <button class="device-option" type="button" role="radio" aria-checked="false" data-device="x3">
               <strong data-site-i18n="deviceX3">Xteink X3</strong>
-              <span>ESP32-C3 · 7.4 MB OTA slot</span>
+              <span data-site-i18n="deviceX3Slot">ESP32-C3 · 7.4 MB OTA slot</span>
             </button>
-            <button class="device-option" type="button" role="radio" aria-checked="false" disabled>
+            <button class="device-option" type="button" role="radio" aria-checked="false" data-device="x4pro">
               <strong data-site-i18n="deviceX4Pro">Xteink X4 Pro</strong>
-              <span data-site-i18n="deviceX4ProStatus">Not supported · ESP32-S3</span>
+              <span data-site-i18n="deviceX4ProSlot">ESP32-S3 · 8.2 MB OTA slot</span>
             </button>
           </div>
-          <p class="device-unsupported-note" data-site-i18n="deviceX4ProUnsupported">X4 Pro is not compatible with the current ESP32-C3 firmware. It needs a separate ESP32-S3 build; do not select X4 for an X4 Pro.</p>
+          <p class="device-note" id="device-note" hidden></p>
         </div>
 
         <div class="version-box">
@@ -612,7 +616,11 @@
       <pre><code>git clone https://github.com/franssjz/cpr-vcodex.git
 cd cpr-vcodex
 
-pio run -e gh_release -t upload</code></pre>
+# Xteink X4 / X3 (ESP32-C3)
+pio run -e gh_release -t upload
+
+# Xteink X4 Pro (ESP32-S3)
+pio run -e x4pro-gh_release -t upload</code></pre>
     </section>
   </main>
 
@@ -628,9 +636,26 @@ pio run -e gh_release -t upload</code></pre>
     const OTADATA_SIZE = 0x2000;
     const APP_MIN_SIZE = 0xf0000;
     const DEVICE_STORAGE_KEY = "cprVcodexFlashDevice";
+    const RELEASE_REPO = "franssjz/cpr-vcodex";
+    // Stock Xteink X4 Pro (ESP32-S3, 16 MB) partition table. Its OTA slots are
+    // 0x7E0000 each; the CPR-vCodex X4 Pro image is linked against the smaller
+    // C3 slot size, so it always fits.
+    const X4_PRO_PARTITIONS = [
+      {type: "data-nvs", offset: 0x9000, size: 0x5000},
+      {type: "data-ota", offset: 0xe000, size: 0x2000},
+      {type: "app-ota_0", offset: 0x10000, size: 0x7e0000},
+      {type: "app-ota_1", offset: 0x7f0000, size: 0x7e0000},
+      {type: "data-spiffs", offset: 0xfd0000, size: 0x14000},
+      {type: "data-coredump", offset: 0xfe4000, size: 0x1c000}
+    ];
+    // `chip` must equal esptool-js (0.5.7) `loader.chip.CHIP_NAME` for the
+    // connected part; the flasher aborts before any write if they differ.
+    // `firmwareKey` selects the image entry in firmware/manifest.json `devices`.
     const DEVICE_CONFIGS = {
       x4: {
         label: "Xteink X4",
+        chip: "ESP32-C3",
+        firmwareKey: "x4",
         appSize: 0x640000,
         appOffsets: {
           app0: 0x10000,
@@ -647,6 +672,8 @@ pio run -e gh_release -t upload</code></pre>
       },
       x3: {
         label: "Xteink X3",
+        chip: "ESP32-C3",
+        firmwareKey: "x4",
         appSize: 0x770000,
         appOffsets: {
           app0: 0x10000,
@@ -660,16 +687,22 @@ pio run -e gh_release -t upload</code></pre>
           {type: "data-spiffs", offset: 15663104, size: 1048576},
           {type: "data-coredump", offset: 16711680, size: 65536}
         ]
+      },
+      x4pro: {
+        label: "Xteink X4 Pro",
+        chip: "ESP32-S3",
+        firmwareKey: "x4pro",
+        appSize: 0x7e0000,
+        appOffsets: {
+          app0: 0x10000,
+          app1: 0x7f0000
+        },
+        partitions: X4_PRO_PARTITIONS,
+        // The S3 USB Serial/JTAG cannot be reset from the host; the user
+        // power-cycles it after the write (see flashCompleteX4Pro).
+        manualReset: true
       }
     };
-    const X4_PRO_PARTITIONS = [
-      {type: "data-nvs", offset: 0x9000, size: 0x5000},
-      {type: "data-ota", offset: 0xe000, size: 0x2000},
-      {type: "app-ota_0", offset: 0x10000, size: 0x7e0000},
-      {type: "app-ota_1", offset: 0x7f0000, size: 0x7e0000},
-      {type: "data-spiffs", offset: 0xfd0000, size: 0x14000},
-      {type: "data-coredump", offset: 0xfe4000, size: 0x1c000}
-    ];
     const STEP_IDS = [
       "connect",
       "partition",
@@ -722,6 +755,24 @@ pio run -e gh_release -t upload</code></pre>
         repo: "franssjz/cpr-vcodex",
         tag: "1.5.0.24-cpr-vcodex",
         asset: "1.5.0.24-cpr-vcodex.bin"
+      },
+      devices: {
+        x4: {
+          chipFamily: "ESP32-C3",
+          path: "firmware/firmware.bin",
+          asset: "1.5.0.24-cpr-vcodex.bin",
+          downloadUrl: "https://github.com/franssjz/cpr-vcodex/releases/download/1.5.0.24-cpr-vcodex/1.5.0.24-cpr-vcodex.bin",
+          size: 6141856,
+          sha256: "9d6f2dfcd5cf131b77c32b5bb27ee9fac9d593ada19dc89d0775cc5bd6146c09"
+        },
+        x3: {
+          chipFamily: "ESP32-C3",
+          path: "firmware/firmware.bin",
+          asset: "1.5.0.24-cpr-vcodex.bin",
+          downloadUrl: "https://github.com/franssjz/cpr-vcodex/releases/download/1.5.0.24-cpr-vcodex/1.5.0.24-cpr-vcodex.bin",
+          size: 6141856,
+          sha256: "9d6f2dfcd5cf131b77c32b5bb27ee9fac9d593ada19dc89d0775cc5bd6146c09"
+        }
       }
     };
 
@@ -739,12 +790,14 @@ pio run -e gh_release -t upload</code></pre>
       unsupported: document.getElementById("unsupported"),
       errorBox: document.getElementById("error-box"),
       errorMessage: document.getElementById("error-message"),
+      deviceNote: document.getElementById("device-note"),
       deviceOptions: document.querySelectorAll("[data-device]")
     };
 
-    const firmware = {...FALLBACK_RELEASE};
+    const firmware = {...FALLBACK_RELEASE, devices: {...(FALLBACK_RELEASE.devices || {})}};
     const stepNodes = new Map();
     let currentTransport = null;
+    let flashInProgress = false;
     let selectedDevice = localStorage.getItem(DEVICE_STORAGE_KEY);
     if (!DEVICE_CONFIGS[selectedDevice]) {
       selectedDevice = "x4";
@@ -766,6 +819,11 @@ pio run -e gh_release -t upload</code></pre>
         firmware.size = manifest.size || firmware.size;
         firmware.sha256 = manifest.sha256 || firmware.sha256;
         firmware.source = manifest.source || firmware.source;
+        if (manifest.devices && typeof manifest.devices === "object") {
+          // The manifest is authoritative: a device missing there is not
+          // published for this release even if the fallback listed it.
+          firmware.devices = {...manifest.devices};
+        }
         updateFirmwareDetails();
       })
       .catch(() => updateFirmwareDetails());
@@ -786,15 +844,21 @@ pio run -e gh_release -t upload</code></pre>
     async function startFlash() {
       let loader = null;
       const device = getDeviceConfig();
+      const image = getDeviceFirmware(device);
       setError("");
-      setStatus(siteT("choosePort"));
+      if (!image) {
+        setError(siteT("firmwareUnavailableForDevice", {device: device.label, chip: device.chip}));
+        setStatus(siteT("flashStopped"), "warning");
+        return;
+      }
+      setStatus(siteT("choosePort", {chip: device.chip, device: device.label}));
       resetSteps();
       setRunning(true);
 
       try {
         loader = await runStep("connect", async () => {
           const port = await navigator.serial.requestPort({
-            filters: [{usbVendorId: USB_VENDOR_ID, usbProductId: USB_PRODUCT_ID}]
+            filters: serialFilters(device)
           });
           currentTransport = new Transport(port, false);
           const espLoader = new ESPLoader({
@@ -806,6 +870,18 @@ pio run -e gh_release -t upload</code></pre>
 
           updateStep("connect", {detail: siteT("openingConnection")});
           await espLoader.main();
+          // Safety gate: the selected model decides which image and offsets
+          // are used, so the connected silicon must match it. Abort here,
+          // before any flash read or write, on a mismatch.
+          const detectedChip = detectedChipName(espLoader);
+          if (detectedChip !== device.chip) {
+            throw new Error(siteT("chipMismatch", {
+              device: device.label,
+              expected: device.chip,
+              detected: detectedChip || siteT("firmwareSourceUnknown")
+            }));
+          }
+          updateStep("connect", {detail: siteT("chipDetected", {chip: detectedChip})});
           return espLoader;
         });
 
@@ -817,7 +893,7 @@ pio run -e gh_release -t upload</code></pre>
 
         const firmwareData = await runStep("download", async () => {
           updateStep("download", {detail: siteT("fetchingFirmware")});
-          const response = await fetch(firmware.firmwareUrl, {cache: "no-store"});
+          const response = await fetch(image.path, {cache: "no-store"});
           if (!response.ok) {
             throw new Error(`${siteT("firmwareDownloadFailed")}: HTTP ${response.status}`);
           }
@@ -832,19 +908,20 @@ pio run -e gh_release -t upload</code></pre>
           if (data.length < APP_MIN_SIZE) {
             throw new Error(siteT("firmwareTooSmall"));
           }
-          if (firmware.size && data.length !== firmware.size) {
-            throw new Error(siteT("firmwareSizeMismatch", {expected: formatBytes(firmware.size), actual: formatBytes(data.length)}));
+          if (image.size && data.length !== image.size) {
+            throw new Error(siteT("firmwareSizeMismatch", {expected: formatBytes(image.size), actual: formatBytes(data.length)}));
           }
-          if (firmware.sha256) {
-            if (!crypto.subtle) {
-              throw new Error(siteT("firmwareHashUnavailable"));
-            }
-            const digest = await sha256Hex(data);
-            if (digest !== firmware.sha256.toLowerCase()) {
-              throw new Error(siteT("firmwareHashMismatch"));
-            }
+          if (!image.sha256) {
+            throw new Error(siteT("firmwareHashUnavailable"));
           }
-          updateStep("download", {detail: `${firmware.version}, ${formatBytes(data.length)}, SHA-256 ${shortSha(firmware.sha256)}`});
+          if (!crypto.subtle) {
+            throw new Error(siteT("firmwareHashUnavailable"));
+          }
+          const digest = await sha256Hex(data);
+          if (digest !== image.sha256.toLowerCase()) {
+            throw new Error(siteT("firmwareHashMismatch"));
+          }
+          updateStep("download", {detail: `${firmware.version} (${image.asset || device.chip}), ${formatBytes(data.length)}, SHA-256 ${shortSha(image.sha256)}`});
           return data;
         });
 
@@ -887,6 +964,9 @@ pio run -e gh_release -t upload</code></pre>
         });
 
         await runStep("reset", async () => {
+          if (device.manualReset) {
+            updateStep("reset", {detail: siteT("resetManualX4Pro")});
+          }
           // esptool-js 0.5.7's usbJTAGSerialReset.reset() is broken for native USB
           // (pid 0x1001): its entire body is `wait 200ms → setRTS(false) → wait 200ms`.
           // Since RTS is already false after the bootloader-entry sequence, this is a
@@ -908,7 +988,7 @@ pio run -e gh_release -t upload</code></pre>
           }
         });
 
-        setStatus(siteT("flashComplete"), "success");
+        setStatus(siteT(device.manualReset ? "flashCompleteX4Pro" : "flashComplete"), "success");
       } catch (error) {
         console.error(error);
         const message = error && error.message ? error.message : siteT("unknownFlashError");
@@ -1057,9 +1137,6 @@ pio run -e gh_release -t upload</code></pre>
     }
 
     function validatePartitionTable(table, device) {
-      if (partitionTablesMatch(table, X4_PRO_PARTITIONS)) {
-        throw new Error(siteT("partitionUnsupportedX4Pro"));
-      }
       const ok = partitionTablesMatch(table, device.partitions);
       if (!ok) {
         throw new Error(
@@ -1226,7 +1303,8 @@ pio run -e gh_release -t upload</code></pre>
     }
 
     function setRunning(isRunning) {
-      els.flashButton.disabled = isRunning || !webSerialSupported;
+      flashInProgress = isRunning;
+      els.flashButton.disabled = isRunning || !webSerialSupported || !getDeviceFirmware(getDeviceConfig());
       els.flashButton.textContent = isRunning ? siteT("flashing") : flashButtonLabel();
       els.deviceOptions.forEach(button => {
         button.disabled = isRunning;
@@ -1264,36 +1342,107 @@ pio run -e gh_release -t upload</code></pre>
     }
 
     function updateFirmwareDetails() {
+      const device = getDeviceConfig();
+      const image = getDeviceFirmware(device);
       const source = firmware.source || {};
       const sourceTag = source.tag || firmware.version;
-      const sourceRepo = source.repo || "franssjz/cpr-vcodex";
+      const sourceRepo = source.repo || RELEASE_REPO;
       els.version.textContent = firmware.version;
       els.source.textContent = source.type === "github-release"
         ? `${sourceRepo}@${sourceTag}`
         : siteT("firmwareSourceUnknown");
-      els.asset.textContent = source.asset || firmware.downloadUrl.split("/").pop() || siteT("firmwareSourceUnknown");
-      els.size.textContent = firmware.size ? formatBytes(firmware.size) : siteT("firmwareSizeUnknown");
-      els.sha.textContent = firmware.sha256 ? shortSha(firmware.sha256) : siteT("firmwareSourceUnknown");
-      els.sha.title = firmware.sha256 || "";
-      els.downloadLink.href = firmware.downloadUrl;
+      if (image) {
+        els.asset.textContent = image.asset || image.downloadUrl.split("/").pop() || siteT("firmwareSourceUnknown");
+        els.size.textContent = image.size ? formatBytes(image.size) : siteT("firmwareSizeUnknown");
+        els.sha.textContent = image.sha256 ? shortSha(image.sha256) : siteT("firmwareSourceUnknown");
+        els.sha.title = image.sha256 || "";
+        els.downloadLink.href = image.downloadUrl;
+      } else {
+        els.asset.textContent = siteT("firmwareNotPublished", {chip: device.chip});
+        els.size.textContent = siteT("firmwareSizeUnknown");
+        els.sha.textContent = siteT("firmwareSourceUnknown");
+        els.sha.title = "";
+        els.downloadLink.href = `https://github.com/${sourceRepo}/releases/tag/${encodeURIComponent(sourceTag)}`;
+      }
       updateDeviceSelection();
     }
 
     function updateDeviceSelection() {
       const device = getDeviceConfig();
+      const image = getDeviceFirmware(device);
       els.deviceOptions.forEach(button => {
         button.setAttribute("aria-checked", button.dataset.device === selectedDevice ? "true" : "false");
       });
-      if (!els.flashButton.disabled || !webSerialSupported) {
+      if (flashInProgress) {
+        els.flashButton.textContent = siteT("flashing");
+      } else {
         els.flashButton.textContent = flashButtonLabel();
+        els.flashButton.disabled = !webSerialSupported || !image;
       }
       els.flashButton.setAttribute("aria-label", flashButtonLabel());
       els.flashButton.title = flashButtonLabel();
       els.downloadLink.title = `${firmware.version} for ${device.label}`;
+      if (!image) {
+        els.deviceNote.textContent = siteT("firmwareUnavailableForDevice", {device: device.label, chip: device.chip});
+        els.deviceNote.hidden = false;
+      } else if (device.manualReset) {
+        els.deviceNote.textContent = siteT("deviceX4ProNote");
+        els.deviceNote.hidden = false;
+      } else {
+        els.deviceNote.textContent = "";
+        els.deviceNote.hidden = true;
+      }
     }
 
     function getDeviceConfig() {
       return DEVICE_CONFIGS[selectedDevice] || DEVICE_CONFIGS.x4;
+    }
+
+    // Resolve the image for a device from the manifest `devices` map. The
+    // ESP32-C3 entries fall back to the flat top-level fields (older manifest
+    // shape); the ESP32-S3 entry has no fallback, so a release without the
+    // X4 Pro asset leaves the X4 Pro option visible but not flashable.
+    function getDeviceFirmware(device) {
+      const devices = firmware.devices || {};
+      const entry = devices[device.firmwareKey];
+      if (entry && entry.path && entry.sha256) {
+        if (entry.chipFamily && entry.chipFamily !== device.chip) {
+          return null;
+        }
+        return {
+          path: entry.path,
+          asset: entry.asset || "",
+          downloadUrl: entry.downloadUrl || firmware.downloadUrl,
+          size: entry.size,
+          sha256: entry.sha256
+        };
+      }
+      if (device.chip === "ESP32-C3" && firmware.firmwareUrl && firmware.sha256) {
+        return {
+          path: firmware.firmwareUrl,
+          asset: (firmware.source || {}).asset || "",
+          downloadUrl: firmware.downloadUrl,
+          size: firmware.size,
+          sha256: firmware.sha256
+        };
+      }
+      return null;
+    }
+
+    function serialFilters(device) {
+      // Both parts enumerate the Espressif USB Serial/JTAG (303a:1001) in the
+      // ROM bootloader. The X4 Pro firmware may also expose a TinyUSB CDC port,
+      // so accept any Espressif VID for it and rely on the chip check.
+      if (device.chip === "ESP32-S3") {
+        return [{usbVendorId: USB_VENDOR_ID}];
+      }
+      return [{usbVendorId: USB_VENDOR_ID, usbProductId: USB_PRODUCT_ID}];
+    }
+
+    function detectedChipName(espLoader) {
+      const chip = espLoader && espLoader.chip;
+      if (!chip) return "";
+      return String(chip.CHIP_NAME || "").trim();
     }
 
     function flashButtonLabel() {

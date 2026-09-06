@@ -196,15 +196,16 @@ std::string formatAnnualReadingTitle(const int year) {
 }
 
 int getScrollableContentBottom(const GfxRenderer&, const ThemeMetrics&) {
-  return CHART_HEADER_HEIGHT + CHART_TOP_GAP + CHART_HEIGHT + CHART_SECTION_GAP + CHART_HEADER_HEIGHT +
-         CHART_TOP_GAP + CHART_HEIGHT;
+  return CHART_HEADER_HEIGHT + CHART_TOP_GAP + CHART_HEIGHT + CHART_SECTION_GAP + CHART_HEADER_HEIGHT + CHART_TOP_GAP +
+         CHART_HEIGHT;
 }
 
 int getMaxScrollOffset(const GfxRenderer& renderer, const ThemeMetrics& metrics) {
   const int summaryTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int recentTop = summaryTop + SUMMARY_CARD_HEIGHT * 3 + SUMMARY_GAP * 2 + metrics.verticalSpacing;
   const int chartViewportTop = recentTop + RECENT_CARD_HEIGHT + metrics.verticalSpacing;
-  const int visibleHeight = renderer.getScreenHeight() - metrics.buttonHintsHeight - CHART_BOTTOM_GAP - chartViewportTop;
+  const int visibleHeight =
+      renderer.getScreenHeight() - metrics.buttonHintsHeight - CHART_BOTTOM_GAP - chartViewportTop;
   return std::max(0, getScrollableContentBottom(renderer, metrics) - visibleHeight);
 }
 
@@ -241,8 +242,7 @@ void drawReadingChart(GfxRenderer& renderer, const Rect& rect, const std::vector
     const int barX = chartLeft + index * (barWidth + barGap);
     const uint64_t readingMs = bars[index].readingMs;
     if (!bars[index].topLabel.empty()) {
-      const int labelWidth =
-          renderer.getTextWidth(SMALL_FONT_ID, bars[index].topLabel.c_str(), EpdFontFamily::REGULAR);
+      const int labelWidth = renderer.getTextWidth(SMALL_FONT_ID, bars[index].topLabel.c_str(), EpdFontFamily::REGULAR);
       renderer.drawText(SMALL_FONT_ID, barX + (barWidth - labelWidth) / 2, topLabelY, bars[index].topLabel.c_str());
     }
 
@@ -295,6 +295,19 @@ void ReadingStatsExtendedActivity::loop() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int maxScrollOffset = getMaxScrollOffset(renderer, metrics);
 
+  // Touch: swipe up scrolls the charts up (content follows the finger), swipe
+  // down scrolls back. Back is the left-edge swipe (Button::Back above).
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
+    const int delta = swipe == MappedInputManager::SwipeDir::Up ? CHART_SCROLL_STEP : -CHART_SCROLL_STEP;
+    const int nextOffset = std::clamp(scrollOffset + delta, 0, maxScrollOffset);
+    if (nextOffset != scrollOffset) {
+      scrollOffset = nextOffset;
+      requestUpdate();
+    }
+    return;
+  }
+
   buttonNavigator.onPreviousRelease([&]() {
     const int nextOffset = std::max(0, scrollOffset - CHART_SCROLL_STEP);
     if (nextOffset != scrollOffset) {
@@ -333,9 +346,8 @@ void ReadingStatsExtendedActivity::render(RenderLock&&) {
   const std::string last7DaysValue = ReadingStatsAnalytics::formatDurationHm(READING_STATS.getRecentReadingMs(7));
   const std::string last30DaysValue = ReadingStatsAnalytics::formatDurationHm(READING_STATS.getRecentReadingMs(30));
   const uint64_t todayReadingMs = READING_STATS.getTodayReadingMs();
-  const std::string dailyGoalValue =
-      ReadingStatsAnalytics::formatDurationHm(todayReadingMs) + " / " +
-      ReadingStatsAnalytics::formatDurationHm(getDailyReadingGoalMs());
+  const std::string dailyGoalValue = ReadingStatsAnalytics::formatDurationHm(todayReadingMs) + " / " +
+                                     ReadingStatsAnalytics::formatDurationHm(getDailyReadingGoalMs());
   int annualReadingYear = 0;
   const auto annualReadingBars = getAnnualReadingBars(annualReadingYear);
 
@@ -361,16 +373,16 @@ void ReadingStatsExtendedActivity::render(RenderLock&&) {
                  std::to_string(READING_STATS.getCurrentStreakDays()));
   drawMetricCard(renderer, Rect{sidePadding + cardWidth + SUMMARY_GAP, summaryTop, cardWidth, SUMMARY_CARD_HEIGHT},
                  tr(STR_MAX_STREAK), std::to_string(READING_STATS.getMaxStreakDays()));
-  drawMetricCard(renderer, Rect{sidePadding, summaryTop + SUMMARY_CARD_HEIGHT + SUMMARY_GAP, cardWidth,
-                                SUMMARY_CARD_HEIGHT},
+  drawMetricCard(renderer,
+                 Rect{sidePadding, summaryTop + SUMMARY_CARD_HEIGHT + SUMMARY_GAP, cardWidth, SUMMARY_CARD_HEIGHT},
                  tr(STR_DAILY_GOAL), dailyGoalValue, todayReadingMs >= getDailyReadingGoalMs());
   drawMetricCard(renderer,
                  Rect{sidePadding + cardWidth + SUMMARY_GAP, summaryTop + SUMMARY_CARD_HEIGHT + SUMMARY_GAP, cardWidth,
                       SUMMARY_CARD_HEIGHT},
                  tr(STR_READING_TIME), ReadingStatsAnalytics::formatDurationHm(READING_STATS.getTotalReadingMs()));
-  drawMetricCard(renderer, Rect{sidePadding, summaryTop + (SUMMARY_CARD_HEIGHT + SUMMARY_GAP) * 2, cardWidth,
-                                SUMMARY_CARD_HEIGHT},
-                 tr(STR_BOOKS_FINISHED), std::to_string(READING_STATS.getBooksFinishedCount()));
+  drawMetricCard(
+      renderer, Rect{sidePadding, summaryTop + (SUMMARY_CARD_HEIGHT + SUMMARY_GAP) * 2, cardWidth, SUMMARY_CARD_HEIGHT},
+      tr(STR_BOOKS_FINISHED), std::to_string(READING_STATS.getBooksFinishedCount()));
   drawMetricCard(renderer,
                  Rect{sidePadding + cardWidth + SUMMARY_GAP, summaryTop + (SUMMARY_CARD_HEIGHT + SUMMARY_GAP) * 2,
                       cardWidth, SUMMARY_CARD_HEIGHT},

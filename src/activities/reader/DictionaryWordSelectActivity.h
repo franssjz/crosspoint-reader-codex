@@ -8,8 +8,12 @@
 #include <string>
 #include <vector>
 
-#include "../Activity.h"
+#include "activities/Activity.h"
 
+// Word selection over the current reader page (fork StarDict dictionary +
+// highlight mode). Buttons step through words/rows; on touch boards a
+// touch-down moves the highlight and a tap on a word looks it up (or, in
+// highlight mode, sets the selection anchor / end) directly.
 class DictionaryWordSelectActivity final : public Activity {
  public:
   DictionaryWordSelectActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::shared_ptr<Page> page,
@@ -80,6 +84,11 @@ class DictionaryWordSelectActivity final : public Activity {
   void mergeHyphenatedWords();
   void moveRow(int delta);
   void moveWord(int delta);
+  // Touch helpers (upstream): word under a touch point (finger slop included),
+  // -1 when none; and moving the cursor straight to a word index.
+  int wordAt(int x, int y) const;
+  bool selectWordIndex(int index);
+  void cancelSelection();
   void lookupSelectedWord();
   void confirmHighlightSelection();
   std::string buildSelectedText(int from, int to) const;

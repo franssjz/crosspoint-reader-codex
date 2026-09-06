@@ -14,7 +14,7 @@ def create_epub(filename, title, chapters):
     with zipfile.ZipFile(filename, 'w', zipfile.ZIP_DEFLATED) as epub:
         # mimetype (uncompressed, first file)
         epub.writestr('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
-
+        
         # META-INF/container.xml
         epub.writestr('META-INF/container.xml', '''<?xml version="1.0"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -22,7 +22,7 @@ def create_epub(filename, title, chapters):
     <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
   </rootfiles>
 </container>''')
-
+        
         # Build spine and manifest
         manifest_items = []
         spine_items = []
@@ -31,7 +31,7 @@ def create_epub(filename, title, chapters):
             manifest_items.append(f'<item id="{chapter_id}" href="{chapter_id}.xhtml" media-type="application/xhtml+xml"/>')
             spine_items.append(f'<itemref idref="{chapter_id}"/>')
             epub.writestr(f'OEBPS/{chapter_id}.xhtml', content)
-
+        
         # Write stylesheet
         epub.writestr('OEBPS/style.css', '''.super {
   vertical-align: super;
@@ -41,7 +41,7 @@ def create_epub(filename, title, chapters):
 }
 ''')
         manifest_items.append('<item id="style" href="style.css" media-type="text/css"/>')
-
+        
         # content.opf
         epub.writestr('OEBPS/content.opf', f'''<?xml version="1.0"?>
 <package version="2.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid">
@@ -59,7 +59,7 @@ def create_epub(filename, title, chapters):
     {''.join(spine_items)}
   </spine>
 </package>''')
-
+        
         # toc.ncx
         nav_points = []
         for i, (chapter_title, _) in enumerate(chapters):
@@ -68,7 +68,7 @@ def create_epub(filename, title, chapters):
       <navLabel><text>{chapter_title}</text></navLabel>
       <content src="chapter{i}.xhtml"/>
     </navPoint>''')
-
+        
         epub.writestr('OEBPS/toc.ncx', f'''<?xml version="1.0"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <head>
@@ -97,7 +97,7 @@ def make_chapter(title, content):
 
 if __name__ == '__main__':
     print("Creating subscript/superscript test EPUB...")
-
+    
     chapters = [
         ("Introduction", make_chapter("Subscript and Superscript Tests", """
 <p>This EPUB tests subscript and superscript rendering.</p>
@@ -111,7 +111,7 @@ if __name__ == '__main__':
 <li>Long runs of sup/sub text</li>
 </ul>
 """)),
-
+        
         ("Basic Superscript", make_chapter("Basic Superscript", """
 <h2>Mathematical Formulas</h2>
 <p>E = mc<sup>2</sup> is Einstein's mass-energy equivalence.</p>
@@ -123,7 +123,7 @@ if __name__ == '__main__':
 <p>This is a sentence with a footnote<sup>1</sup> reference.</p>
 <p>Multiple footnotes<sup>2</sup> can appear<sup>3</sup> in one paragraph.</p>
 """)),
-
+        
         ("Basic Subscript", make_chapter("Basic Subscript", """
 <h2>Chemical Formulas</h2>
 <p>Water is H<sub>2</sub>O.</p>
@@ -135,7 +135,7 @@ if __name__ == '__main__':
 <p>The sequence a<sub>1</sub>, a<sub>2</sub>, a<sub>3</sub>, ..., a<sub>n</sub>.</p>
 <p>Matrix element A<sub>ij</sub> where i is row and j is column.</p>
 """)),
-
+        
         ("Mixed Sup and Sub", make_chapter("Mixed Superscript and Subscript", """
 <h2>Chemistry and Physics</h2>
 <p>The pH of water is 7, meaning [H<sub>3</sub>O<sup>+</sup>] = 10<sup>-7</sup> mol/L.</p>
@@ -146,7 +146,7 @@ if __name__ == '__main__':
 <p>Isotope notation: <sup>235</sup>U<sub>92</sub> (uranium-235).</p>
 <p>Electron configuration: 1s<sup>2</sup> 2s<sup>2</sup> 2p<sup>6</sup>.</p>
 """)),
-
+        
         ("Ordinals and Dates", make_chapter("Ordinal Numbers", """
 <h2>Ordinal Suffixes</h2>
 <p>On the 1<sup>st</sup> of January, the 2<sup>nd</sup> quarter begins on the 3<sup>rd</sup> month.</p>
@@ -157,7 +157,7 @@ if __name__ == '__main__':
 <p>The 19<sup>th</sup> century saw rapid industrialization.</p>
 <p>World War II ended on May 8<sup>th</sup>, 1945.</p>
 """)),
-
+        
         ("Nested Styles", make_chapter("Nested with Bold and Italic", """
 <h2>Bold Superscript</h2>
 <p>Bold superscript: x<sup><b>2</b></sup> + y<sup><b>2</b></sup> = r<sup><b>2</b></sup>.</p>
@@ -171,7 +171,7 @@ if __name__ == '__main__':
 <p><b>Bold text with H<sub>2</sub>O and E = mc<sup>2</sup> inside.</b></p>
 <p><i>Italic text with CO<sub>2</sub> and x<sup>n</sup> inside.</i></p>
 """)),
-
+        
         ("Long Runs", make_chapter("Long Superscript and Subscript Runs", """
 <h2>Extended Superscript</h2>
 <p>This word<sup>has a rather long superscript attached to it</sup> continuing normally.</p>
@@ -184,7 +184,7 @@ if __name__ == '__main__':
 <h2>Alternating</h2>
 <p>Mixed: x<sup>2</sup>y<sub>1</sub> + x<sup>3</sup>y<sub>2</sub> + x<sup>4</sup>y<sub>3</sub> = 0.</p>
 """)),
-
+        
         ("Edge Cases", make_chapter("Edge Cases and Stress Tests", """
 <h2>Empty and Whitespace</h2>
 <p>Empty superscript: x<sup></sup>y should show xy.</p>
@@ -200,11 +200,13 @@ if __name__ == '__main__':
 <h2>Line Breaking</h2>
 <p>Long text with superscript at the end of a line to test wrapping behavior when the superscript might need to wrap to the next line<sup>1</sup> and continue here.</p>
 """)),
-
+        
         ("CSS Style Tests", make_chapter("CSS Style Tests", """
 <h2>CSS Classes</h2>
 <p>This tests superscript via CSS class (.super): E = mc<span class="super">2</span>.</p>
 <p>This tests subscript via CSS class (.sub): Water is H<span class="sub">2</span>O.</p>
+<p>This tests a CSS superscript internal link: Footnote<a class="super" href="#css-footnote">1</a>.</p>
+<p id="css-footnote">CSS superscript internal-link target.</p>
 
 <h2>CSS Inline Styles</h2>
 <p>This tests superscript via inline style: E = mc<span style="vertical-align: super;">2</span>.</p>
@@ -226,7 +228,7 @@ if __name__ == '__main__':
 <p><i>Italic text with inline H<span style="vertical-align: sub;">2</span>O and E = mc<span style="vertical-align: super;">2</span> inside.</i></p>
 """)),
     ]
-
+    
     output_file = OUTPUT_DIR / 'test_supsub.epub'
     create_epub(output_file, 'Subscript and Superscript Tests', chapters)
     print(f"Created: {output_file}")

@@ -9,6 +9,13 @@ struct WifiCredential {
   std::string password;  // Plaintext in memory; obfuscated with hardware key on disk
 };
 
+// Password-free view of a stored network for display/API consumers.
+struct WifiCredentialSummary {
+  std::string ssid;
+  bool hasPassword = false;
+  bool isLastConnected = false;
+};
+
 class WifiCredentialStore;
 namespace JsonSettingsIO {
 bool saveWifi(const WifiCredentialStore& store, const char* path);
@@ -59,6 +66,11 @@ class WifiCredentialStore {
   bool addCredential(const std::string& ssid, const std::string& password);
   bool removeCredential(const std::string& ssid);
   std::optional<WifiCredential> findCredential(const std::string& ssid) const;
+  std::optional<WifiCredential> getCredentialAt(size_t index) const;
+  std::optional<std::string> getSsidAt(size_t index) const;
+  size_t getCredentialCount() const;
+  // Password-free snapshot for display/API consumers.
+  std::vector<WifiCredentialSummary> getCredentialSummaries() const;
 
   // Check whether automatic connection has any saved network to try without
   // exposing or copying credential contents outside the locked store.

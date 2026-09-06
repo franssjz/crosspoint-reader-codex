@@ -5,13 +5,27 @@
 #include <I18n.h>
 
 #include <algorithm>
+#include <iterator>
 
 #include "CrossPointSettings.h"
+#include "MappedInputManager.h"
+#include "ReaderFontSizes.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/HeaderDateUtils.h"
 
+namespace fui = freeink::ui;
+
 namespace {
+constexpr fui::ActionId ACTION_DISMISS = 1;
+constexpr fui::ActionId ACTION_FLIP = 2;
+constexpr fui::ActionId ACTION_FAIL = 3;
+constexpr fui::ActionId ACTION_SUCCESS = 4;
+// Touch boards: Fail / Flip / Success buttons along the card's bottom edge.
+constexpr int TOUCH_ACTION_BAND_HEIGHT = 48;
+constexpr int TOUCH_ACTION_BAND_GAP = 10;
+constexpr int TOUCH_ACTION_BUTTON_GAP = 10;
+
 struct WrappedCardBody {
   int fontId = UI_10_FONT_ID;
   int lineHeight = 0;
@@ -109,34 +123,34 @@ std::vector<std::string> wrapCardBody(GfxRenderer& renderer, const int fontId, c
   return result;
 }
 
-int builtInReaderFontId(uint8_t family, uint8_t size) {
+int builtInReaderFontId(uint8_t family, uint8_t pointSize) {
   switch (family) {
     case CrossPointSettings::NOTOSANS:
-      switch (size) {
-        case CrossPointSettings::X_SMALL:
+      switch (pointSize) {
+        case 10:
           return NOTOSANS_10_FONT_ID;
-        case CrossPointSettings::SMALL:
+        case 12:
           return NOTOSANS_12_FONT_ID;
-        case CrossPointSettings::LARGE:
+        case 16:
           return NOTOSANS_16_FONT_ID;
-        case CrossPointSettings::EXTRA_LARGE:
+        case 18:
           return NOTOSANS_18_FONT_ID;
-        case CrossPointSettings::MEDIUM:
+        case 14:
         default:
           return NOTOSANS_14_FONT_ID;
       }
     case CrossPointSettings::BOOKERLY:
     default:
-      switch (size) {
-        case CrossPointSettings::X_SMALL:
+      switch (pointSize) {
+        case 10:
           return BOOKERLY_10_FONT_ID;
-        case CrossPointSettings::SMALL:
+        case 12:
           return BOOKERLY_12_FONT_ID;
-        case CrossPointSettings::LARGE:
+        case 16:
           return BOOKERLY_16_FONT_ID;
-        case CrossPointSettings::EXTRA_LARGE:
+        case 18:
           return BOOKERLY_18_FONT_ID;
-        case CrossPointSettings::MEDIUM:
+        case 14:
         default:
           return BOOKERLY_14_FONT_ID;
       }
@@ -152,10 +166,14 @@ std::vector<int> flashcardFontCandidates(int preferredFontId) {
   };
 
   addUnique(preferredFontId);
-  const int startSize =
-      std::clamp<int>(SETTINGS.fontSize, CrossPointSettings::X_SMALL, CrossPointSettings::EXTRA_LARGE);
-  for (int size = startSize; size >= CrossPointSettings::X_SMALL; --size) {
-    addUnique(builtInReaderFontId(SETTINGS.fontFamily, static_cast<uint8_t>(size)));
+  // Walk the built-in point sizes from the reader's current size downwards so
+  // long card bodies fall back to smaller built-in faces before the UI fonts.
+  const uint8_t startSize =
+      snapToNearestPointSize(BUILTIN_READER_POINT_SIZES, std::size(BUILTIN_READER_POINT_SIZES), SETTINGS.fontPointSize);
+  for (int i = static_cast<int>(std::size(BUILTIN_READER_POINT_SIZES)) - 1; i >= 0; --i) {
+    const uint8_t size = BUILTIN_READER_POINT_SIZES[i];
+    if (size > startSize) continue;
+    addUnique(builtInReaderFontId(SETTINGS.fontFamily, size));
   }
   addUnique(UI_12_FONT_ID);
   addUnique(UI_10_FONT_ID);
@@ -366,7 +384,91 @@ void FlashcardReviewActivity::onEnter() {
   renderer.requestNextFullRefresh();
   orientationApplied = true;
   loadDeckData();
+
+  hitCardRect = {};
+  hitFailRect = {};
+  hitFlipRect = {};
+  hitSuccessRect = {};
+  touchActionsVisible = false;
+  dismissOnTap = false;
+  actionButton_ = fui::ButtonProps{};
+  actionButton_.inputMask = fui::InputTouch;
+  resetUi();
+  app.on(ACTION_DISMISS, &FlashcardReviewActivity::onDismissEvent, this);
+  app.on(ACTION_FLIP, &FlashcardReviewActivity::onFlipEvent, this);
+  app.on(ACTION_FAIL, &FlashcardReviewActivity::onFailEvent, this);
+  app.on(ACTION_SUCCESS, &FlashcardReviewActivity::onSuccessEvent, this);
+  app.setScreen(&FlashcardReviewActivity::reviewScreen, this);
   requestUpdate(true);
+}
+
+void FlashcardReviewActivity::reviewScreen(UiScreen& screen, void* user) {
+  static_cast<FlashcardReviewActivity*>(user)->buildReviewScreen(screen);
+}
+
+// Touch targets over the hand-drawn card; only the action buttons draw.
+void FlashcardReviewActivity::buildReviewScreen(UiScreen& screen) {
+  if (dismissOnTap) {
+    screen.frame().hit(screen.frame().screen(), ACTION_DISMISS, 0, fui::InputTouch);
+    return;
+  }
+  if (!hitCardRect.empty()) {
+    screen.frame().hit(hitCardRect, ACTION_FLIP, 0, fui::InputTouch);
+  }
+  if (!touchActionsVisible) return;
+  actionButton_.text = screen.theme().smallText;
+  actionButton_.text.bold = true;
+  actionButton_.label = tr(STR_FAIL);
+  actionButton_.action = ACTION_FAIL;
+  screen.button(actionButton_, hitFailRect);
+  actionButton_.label = tr(STR_FLIP);
+  actionButton_.action = ACTION_FLIP;
+  screen.button(actionButton_, hitFlipRect);
+  actionButton_.label = tr(STR_SUCCESS);
+  actionButton_.action = ACTION_SUCCESS;
+  screen.button(actionButton_, hitSuccessRect);
+}
+
+void FlashcardReviewActivity::onDismissEvent(const fui::ActionEvent&, void* user) {
+  auto* self = static_cast<FlashcardReviewActivity*>(user);
+  self->app.clearTapFlash();
+  self->leave();
+}
+
+void FlashcardReviewActivity::onFlipEvent(const fui::ActionEvent&, void* user) {
+  auto* self = static_cast<FlashcardReviewActivity*>(user);
+  if (!self->hasActiveCard()) return;
+  self->app.clearTapFlash();  // the whole card repaints
+  self->flipCard();
+}
+
+void FlashcardReviewActivity::onFailEvent(const fui::ActionEvent&, void* user) {
+  auto* self = static_cast<FlashcardReviewActivity*>(user);
+  if (!self->hasActiveCard()) return;
+  self->app.clearTapFlash();
+  self->markCurrentFailure();
+}
+
+void FlashcardReviewActivity::onSuccessEvent(const fui::ActionEvent&, void* user) {
+  auto* self = static_cast<FlashcardReviewActivity*>(user);
+  if (!self->hasActiveCard()) return;
+  self->app.clearTapFlash();
+  self->markCurrentSuccess();
+}
+
+void FlashcardReviewActivity::flipCard() {
+  showBack = !showBack;
+  invalidateCardLayout();
+  requestUpdate();
+}
+
+// Same exit the Back button takes on the current page.
+void FlashcardReviewActivity::leave() {
+  if (!loaded) {
+    finish();
+    return;
+  }
+  finishWithSummary();
 }
 
 void FlashcardReviewActivity::onExit() {
@@ -378,6 +480,12 @@ void FlashcardReviewActivity::onExit() {
 }
 
 void FlashcardReviewActivity::loop() {
+  // Touch goes through the FreeInkApp: render() registered the card / button /
+  // dismiss hit rects for the page currently shown.
+  const auto route = routeTouch(mappedInput);
+  if (route.routed && app.invalidated()) requestUpdate();
+  if (route) return;
+
   if (!loaded) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
         mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -410,10 +518,19 @@ void FlashcardReviewActivity::loop() {
     return;
   }
 
+  // Swipe up/down pages a long card body like the Up/Down buttons.
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Up) {
+    scrollCard(1);
+    return;
+  }
+  if (swipe == MappedInputManager::SwipeDir::Down) {
+    scrollCard(-1);
+    return;
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    showBack = !showBack;
-    invalidateCardLayout();
-    requestUpdate();
+    flipCard();
     return;
   }
 
@@ -436,30 +553,22 @@ void FlashcardReviewActivity::render(RenderLock&&) {
   const int pageHeight = renderer.getScreenHeight();
 
   if (!loaded) {
-    HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_FLASHCARDS), tr(STR_OPEN));
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10,
-                              errorMessage.empty() ? tr(STR_FLASHCARDS_INVALID_DECK) : errorMessage.c_str());
-    renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 18, tr(STR_BACK));
-    renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+    renderDismissPage(tr(STR_FLASHCARDS), tr(STR_OPEN),
+                      errorMessage.empty() ? tr(STR_FLASHCARDS_INVALID_DECK) : errorMessage.c_str());
     return;
   }
 
   if (queue.empty()) {
-    HeaderDateUtils::drawHeaderWithDate(renderer, deck.title.c_str(), tr(STR_NO_DUE_CARDS));
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10, tr(STR_NO_DUE_CARDS));
-    renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 18, tr(STR_BACK));
-    renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+    renderDismissPage(deck.title.c_str(), tr(STR_NO_DUE_CARDS), tr(STR_NO_DUE_CARDS));
     return;
   }
 
   if (!ensureCurrentCardLoaded()) {
-    HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_FLASHCARDS), tr(STR_OPEN));
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10,
-                              errorMessage.empty() ? tr(STR_FLASHCARDS_INVALID_DECK) : errorMessage.c_str());
-    renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 18, tr(STR_BACK));
-    renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+    renderDismissPage(tr(STR_FLASHCARDS), tr(STR_OPEN),
+                      errorMessage.empty() ? tr(STR_FLASHCARDS_INVALID_DECK) : errorMessage.c_str());
     return;
   }
+  dismissOnTap = false;
 
   const bool showSessionProgress = SETTINGS.flashcardStudyMode != CrossPointSettings::FLASHCARD_STUDY_INFINITE;
   const int sessionHandled = sessionReviewed + sessionSkipped;
@@ -485,9 +594,25 @@ void FlashcardReviewActivity::render(RenderLock&&) {
   const std::string sideLabel = showBack ? tr(STR_CARD_BACK) : tr(STR_CARD_FRONT);
   renderer.drawText(SMALL_FONT_ID, cardX + 10, cardY + 10, sideLabel.c_str(), true, EpdFontFamily::BOLD);
 
+  // Touch boards reserve a Fail / Flip / Success button row along the card's
+  // bottom edge; the body text shrinks to sit above it.
+  touchActionsVisible = mappedInput.hasTouch();
+  const int actionReserve = touchActionsVisible ? TOUCH_ACTION_BAND_HEIGHT + TOUCH_ACTION_BAND_GAP : 0;
   const int textWidth = cardWidth - 24;
   const int textTop = cardY + 34;
-  const int textHeight = cardHeight - 50;
+  const int textHeight = cardHeight - 50 - actionReserve;
+  hitCardRect = fui::makeRect(cardX, cardY, cardWidth, cardHeight - actionReserve);
+  if (touchActionsVisible) {
+    const int bandY = cardY + cardHeight - TOUCH_ACTION_BAND_HEIGHT - 8;
+    const int bandX = cardX + 12;
+    const int bandWidth = cardWidth - 24;
+    const int buttonWidth = (bandWidth - TOUCH_ACTION_BUTTON_GAP * 2) / 3;
+    hitFailRect = fui::makeRect(bandX, bandY, buttonWidth, TOUCH_ACTION_BAND_HEIGHT);
+    hitFlipRect =
+        fui::makeRect(bandX + buttonWidth + TOUCH_ACTION_BUTTON_GAP, bandY, buttonWidth, TOUCH_ACTION_BAND_HEIGHT);
+    hitSuccessRect = fui::makeRect(bandX + (buttonWidth + TOUCH_ACTION_BUTTON_GAP) * 2, bandY,
+                                   bandWidth - (buttonWidth + TOUCH_ACTION_BUTTON_GAP) * 2, TOUCH_ACTION_BAND_HEIGHT);
+  }
   const EpdFontFamily::Style bodyStyle = showBack ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
   if (!cardLayoutValid) {
     const std::string& sourceText = showBack ? currentCard().back : currentCard().front;
@@ -519,9 +644,26 @@ void FlashcardReviewActivity::render(RenderLock&&) {
     textY += wrappedLineHeight;
   }
 
+  // Touch targets (card = flip) and, on touch boards, the action buttons,
+  // drawn by the app over the card's bottom band.
+  renderUi();
+
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_FLIP), tr(STR_SUCCESS), tr(STR_FAIL));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   drawReviewScrollHints(renderer, metrics, pageWidth, scrollLineOffset > 0, scrollLineOffset < maxScrollLineOffset);
 
   renderer.displayBuffer();
+}
+
+void FlashcardReviewActivity::renderDismissPage(const char* title, const char* subtitle, const char* message) {
+  const int pageHeight = renderer.getScreenHeight();
+  HeaderDateUtils::drawHeaderWithDate(renderer, title, subtitle);
+  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10, message);
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 18, tr(STR_BACK));
+  // A tap anywhere leaves (registered by the app; nothing is drawn).
+  dismissOnTap = true;
+  hitCardRect = {};
+  touchActionsVisible = false;
+  renderUi();
+  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
 }

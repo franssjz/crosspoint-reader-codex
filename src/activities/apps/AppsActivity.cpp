@@ -7,23 +7,25 @@
 
 #include "AchievementsActivity.h"
 #include "BookmarksAppActivity.h"
+#include "CrossPointSettings.h"
 #include "DictionaryActivity.h"
 #include "FavoritesAppActivity.h"
 #include "FlashcardsAppActivity.h"
 #include "IfFoundActivity.h"
+#include "OpdsServerStore.h"
 #include "ReadingHeatmapActivity.h"
 #include "ReadingProfileActivity.h"
 #include "ReadingStatsActivity.h"
 #include "ScreenCleanActivity.h"
 #include "SleepAppActivity.h"
-#include "activities/settings/ClockSyncActivity.h"
 #include "SyncDayActivity.h"
-#include "CrossPointSettings.h"
+#include "activities/settings/ClockSyncActivity.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
-#include "OpdsServerStore.h"
+#include "components/UiAppHelpers.h"
 #include "util/HeaderDateUtils.h"
 #include "util/ShortcutUiMetadata.h"
+
+namespace fui = freeink::ui;
 
 namespace {
 std::string buildAppsHeaderSubtitle(const int selectedIndex, const int totalItems, const int itemsPerPage) {
@@ -38,8 +40,7 @@ std::string buildAppsHeaderSubtitle(const int selectedIndex, const int totalItem
 }
 }  // namespace
 
-void AppsActivity::onEnter() {
-  Activity::onEnter();
+void AppsActivity::loadShortcuts() {
   appShortcuts = getConfiguredShortcuts(CrossPointSettings::SHORTCUT_APPS);
   if (!OPDS_STORE.hasServers()) {
     appShortcuts.erase(std::remove_if(appShortcuts.begin(), appShortcuts.end(),
@@ -48,111 +49,100 @@ void AppsActivity::onEnter() {
                                       }),
                        appShortcuts.end());
   }
-  selectedIndex = 0;
-  rebuildShortcutSubtitles();
-  requestUpdate();
+  rebuildRows();
 }
 
-void AppsActivity::loop() {
-  const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, true);
-
-  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    onGoHome();
-    return;
-  }
-
-  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-    openSelectedApp();
-    return;
-  }
-
-  buttonNavigator.onNextPress([this] {
-    if (appShortcuts.empty()) {
-      return;
-    }
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, static_cast<int>(appShortcuts.size()));
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousPress([this] {
-    if (appShortcuts.empty()) {
-      return;
-    }
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, static_cast<int>(appShortcuts.size()));
-    requestUpdate();
-  });
-
-  buttonNavigator.onNextContinuous([this, pageItems] {
-    if (appShortcuts.empty()) {
-      return;
-    }
-    selectedIndex = ButtonNavigator::nextPageIndex(selectedIndex, static_cast<int>(appShortcuts.size()), pageItems);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousContinuous([this, pageItems] {
-    if (appShortcuts.empty()) {
-      return;
-    }
-    selectedIndex = ButtonNavigator::previousPageIndex(selectedIndex, static_cast<int>(appShortcuts.size()), pageItems);
-    requestUpdate();
-  });
-}
-
-void AppsActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-  const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, true);
-  const std::string headerSubtitle =
-      buildAppsHeaderSubtitle(selectedIndex, static_cast<int>(appShortcuts.size()), pageItems);
-
-  HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_APPS), headerSubtitle.empty() ? nullptr : headerSubtitle.c_str());
-
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
-
-  if (appShortcuts.empty()) {
-    renderer.drawCenteredText(UI_10_FONT_ID, contentTop + 24, tr(STR_NO_ENTRIES));
-  } else {
-    GUI.drawList(renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(appShortcuts.size()),
-                 selectedIndex,
-                 [this](const int index) { return ShortcutUiMetadata::getName(*appShortcuts[index]); },
-                 [this](const int index) {
-                   return (index >= 0 && index < static_cast<int>(shortcutSubtitles.size())) ? shortcutSubtitles[index]
-                                                                                              : std::string{};
-                 },
-                 [this](const int index) { return appShortcuts[index]->icon; });
-  }
-
-  const auto labels = mappedInput.mapLabels(tr(STR_HOME), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-
-  renderer.displayBuffer();
-}
-
-void AppsActivity::rebuildShortcutSubtitles() {
+// Derives the row cache from appShortcuts. Called whenever the shortcut list
+// is (re)loaded, never from buildScreen(), which reuses the rows on repaint.
+void AppsActivity::rebuildRows() {
+  shortcutNames.clear();
   shortcutSubtitles.clear();
+  rowItems.clear();
+  shortcutNames.reserve(appShortcuts.size());
   shortcutSubtitles.reserve(appShortcuts.size());
+  rowItems.reserve(appShortcuts.size());
 
   for (const ShortcutDefinition* definition : appShortcuts) {
     if (definition == nullptr) {
+      shortcutNames.emplace_back();
       shortcutSubtitles.emplace_back();
-      continue;
+    } else {
+      shortcutNames.push_back(ShortcutUiMetadata::getName(*definition));
+      shortcutSubtitles.push_back(ShortcutUiMetadata::getSubtitle(*definition));
     }
-    shortcutSubtitles.push_back(ShortcutUiMetadata::getSubtitle(*definition));
+  }
+
+  for (size_t i = 0; i < appShortcuts.size(); ++i) {
+    fui::ListItem item;
+    item.label = shortcutNames[i].c_str();
+    if (!shortcutSubtitles[i].empty()) item.subtitle = shortcutSubtitles[i].c_str();
+    if (appShortcuts[i] != nullptr) item.icon = listIconFor(appShortcuts[i]->icon, 32);
+    item.actionValue = static_cast<int16_t>(i);
+    rowItems.push_back(item);
   }
 }
 
-void AppsActivity::openSelectedApp() {
-  if (selectedIndex < 0 || selectedIndex >= static_cast<int>(appShortcuts.size())) {
+void AppsActivity::onEnter() {
+  UiListActivity::onEnter();
+  loadShortcuts();
+}
+
+void AppsActivity::onExit() {
+  Activity::onExit();
+  // rowItems alias the name/subtitle strings; drop them together.
+  rowItems.clear();
+  shortcutNames.clear();
+  shortcutSubtitles.clear();
+  appShortcuts.clear();
+}
+
+void AppsActivity::drawChrome() {
+  const std::string headerSubtitle = buildAppsHeaderSubtitle(nav.selected, listCount(), nav.pageRowsFor(listCount()));
+  HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_APPS),
+                                      headerSubtitle.empty() ? nullptr : headerSubtitle.c_str());
+}
+
+void AppsActivity::drawFooter() {
+  const auto labels = mappedInput.mapLabels(tr(STR_HOME), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void AppsActivity::buildScreen(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  // Content below the header band, above the button hints.
+  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+
+  if (appShortcuts.empty()) {
+    screen.centeredText(tr(STR_NO_ENTRIES), screen.theme().bodyText);
     return;
   }
 
+  fui::ListProps props;
+  props.items = rowItems.data();
+  props.count = static_cast<uint16_t>(rowItems.size());
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
+  fui::TextStyle label = screen.theme().smallText;
+  label.bold = true;  // title/description hierarchy; also the caller-owned marker
+  props.labelText = label;
+  syncListViewport(screen, props, /*hasSubtitle=*/true);
+  screen.list(props);
+}
+
+void AppsActivity::activateIndex(const int index) {
+  if (index < 0 || index >= listCount()) return;
+  // Opening an app leaves this screen; a lingering flash would gray an
+  // unrelated row when the hub reappears.
+  app.clearTapFlash();
+  nav.selected = index;
+  openApp(index);
+}
+
+void AppsActivity::openApp(const int index) {
   std::unique_ptr<Activity> activity;
-  switch (appShortcuts[selectedIndex]->id) {
+  switch (appShortcuts[index]->id) {
     case ShortcutId::BrowseFiles:
       activityManager.goToFileBrowser();
       return;
@@ -211,12 +201,18 @@ void AppsActivity::openSelectedApp() {
   }
 
   startActivityForResult(std::move(activity), [this](const ActivityResult&) {
-    appShortcuts = getConfiguredShortcuts(CrossPointSettings::SHORTCUT_APPS);
-    rebuildShortcutSubtitles();
-    if (!appShortcuts.empty()) {
-      selectedIndex = std::min(selectedIndex, static_cast<int>(appShortcuts.size()) - 1);
-    } else {
-      selectedIndex = 0;
+    // The shortcut set can change underneath (Settings > Shortcuts); the
+    // interaction table still indexes the old rows until the next render.
+    closeRouting();
+    {
+      RenderLock lock(*this);
+      loadShortcuts();
+      if (appShortcuts.empty()) {
+        nav.selected = 0;
+      } else {
+        nav.selected = std::min(nav.selected, listCount() - 1);
+      }
+      nav.follow(listCount());
     }
     requestUpdate();
   });

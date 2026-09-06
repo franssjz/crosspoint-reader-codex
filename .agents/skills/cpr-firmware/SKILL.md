@@ -26,6 +26,10 @@ or activity lifecycle.
 python -X utf8 -m platformio run -e default -j 1
 ```
 
+For screen or input changes, run the desktop simulator before reaching for
+hardware (`agent-docs/simulator.md`): `pio run -e simulator_x4_pro -t
+run_simulator`, or the scripted screenshot flow for repeatable checks.
+
 Use `gh_release` as an additional build when the change is release-facing or
 could affect binary size:
 

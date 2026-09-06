@@ -4488,7 +4488,14 @@ static const EpdFontData bookerly_14_regular = {
     nullptr,
     bookerly_14_regularKernLeftClasses,
     bookerly_14_regularKernRightClasses,
+    nullptr,  // kernLeftCodepoints: this font keeps the packed class maps above
+    nullptr,  // kernLeftClassIds
+    nullptr,  // kernRightCodepoints
+    nullptr,  // kernRightClassIds
     bookerly_14_regularKernMatrix,
+    nullptr,  // kernRowOffsets: this font keeps the dense matrix above
+    nullptr,  // kernSparseCols
+    nullptr,  // kernSparseValues
     697,
     706,
     158,
