@@ -254,7 +254,7 @@ class GfxRenderer {
   void copyGrayscaleLsbBuffers() const;
   void copyGrayscaleMsbBuffers() const;
   void displayGrayBuffer(const unsigned char* lut = nullptr, bool factoryMode = false) const;
-  // LUT for a GrayscaleMode (nullptr = driver default differential LUT).
+  // LUT for a GrayscaleMode (nullptr = driver default for the selected mode).
   static const unsigned char* grayscaleLutFor(GrayscaleMode mode);
   // Tone calibration that image decoding should target for this page.
   void setImageToneMode(const GrayscaleMode mode) const { imageToneMode = mode; }

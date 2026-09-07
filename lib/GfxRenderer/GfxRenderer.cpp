@@ -2035,9 +2035,7 @@ void GfxRenderer::displayGrayBuffer(const unsigned char* lut, const bool factory
 const unsigned char* GfxRenderer::grayscaleLutFor(const GrayscaleMode mode) {
   switch (mode) {
     case GrayscaleMode::FactoryFast:
-      return lut_factory_fast;
     case GrayscaleMode::FactoryQuality:
-      return lut_factory_quality;
     case GrayscaleMode::Differential:
     default:
       return nullptr;
