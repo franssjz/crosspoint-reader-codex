@@ -4,6 +4,7 @@
 #include <HalClock.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <MemoryBudget.h>
 #include <WiFi.h>
 
 #include <algorithm>
@@ -11,6 +12,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "SdCardFontGlobals.h"
 #include "WifiCredentialStore.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
@@ -32,11 +34,29 @@ bool hasBssidBytes(const uint8_t bssid[WIFI_BSSID_LEN]) {
 void WifiSelectionActivity::onEnter() {
   Activity::onEnter();
 
+  // WiFi startup needs several contiguous driver buffers. Release both the
+  // active SD font and its catalog before the radio starts allocating them.
+  const auto heapBeforeFontRelease = MemoryBudget::snapshot();
+  const bool releasedSdFont = sdFontSystem.releaseForNetwork(renderer);
+  const auto heapAfterFontRelease = MemoryBudget::snapshot();
+  LOG_DBG("WIFI", "SD font network trim released=%d free=%u->%u delta=%ld maxAlloc=%u->%u delta=%ld",
+          releasedSdFont, heapBeforeFontRelease.freeHeap, heapAfterFontRelease.freeHeap,
+          static_cast<int32_t>(heapAfterFontRelease.freeHeap) - static_cast<int32_t>(heapBeforeFontRelease.freeHeap),
+          heapBeforeFontRelease.maxAllocHeap, heapAfterFontRelease.maxAllocHeap,
+          static_cast<int32_t>(heapAfterFontRelease.maxAllocHeap) -
+              static_cast<int32_t>(heapBeforeFontRelease.maxAllocHeap));
+
   // Load saved WiFi credentials - SD card operations need lock as we use SPI
   // for both
   {
     RenderLock lock(*this);
     WIFI_STORE.loadFromFile();
+  }
+
+  if (allowAutoConnect && autoConnectOnly && !WIFI_STORE.hasCredentials()) {
+    LOG_DBG("WIFI", "Auto-connect only requested with no saved credentials");
+    onComplete(false);
+    return;
   }
 
   // Reset state
@@ -56,16 +76,22 @@ void WifiSelectionActivity::onEnter() {
   savePromptSelection = 0;
   forgetPromptSelection = 0;
   autoConnecting = false;
+  autoConnectAttempted = false;
 
   // Cache the MAC address for display.
   // On ESP32, read the base MAC directly to avoid placeholder values when the
   // WiFi driver has not fully initialized yet.
 #if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
-  uint8_t baseMac[6];
-  esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
+  uint8_t baseMac[6] = {};
   char macStr[64];
-  snprintf(macStr, sizeof(macStr), "%s %02x-%02x-%02x-%02x-%02x-%02x", tr(STR_MAC_ADDRESS), baseMac[0], baseMac[1],
-           baseMac[2], baseMac[3], baseMac[4], baseMac[5]);
+  const esp_err_t macResult = esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
+  if (macResult == ESP_OK) {
+    snprintf(macStr, sizeof(macStr), "%s %02x-%02x-%02x-%02x-%02x-%02x", tr(STR_MAC_ADDRESS), baseMac[0],
+             baseMac[1], baseMac[2], baseMac[3], baseMac[4], baseMac[5]);
+  } else {
+    LOG_ERR("WIFI", "Failed to read station MAC (err=%d)", static_cast<int>(macResult));
+    snprintf(macStr, sizeof(macStr), "%s --", tr(STR_MAC_ADDRESS));
+  }
   cachedMacAddress = std::string(macStr);
 #else
   WiFi.mode(WIFI_STA);
@@ -120,6 +146,31 @@ void WifiSelectionActivity::startWifiScan() {
   WiFi.scanNetworks(true);  // true = async scan
 }
 
+void WifiSelectionActivity::returnToNetworkList() {
+  // Back out of a prompt or a failure screen without rescanning. The cached
+  // scan results are still valid, so reusing them keeps the user's place
+  // instead of dropping them into another multi-second scan.
+  autoConnecting = false;
+  state = WifiSelectionState::NETWORK_LIST;
+
+  // Keep the network we were acting on under the cursor. A hidden network the
+  // user typed by hand is not in the scan list, so the cursor simply stays on
+  // the placeholder row it was launched from.
+  if (!selectedSSID.empty()) {
+    const auto selected = std::find_if(networks.begin(), networks.end(), [this](const WifiNetworkInfo& network) {
+      return !network.isHiddenPlaceholder && network.ssid == selectedSSID;
+    });
+    if (selected != networks.end()) {
+      selectedNetworkIndex = static_cast<size_t>(std::distance(networks.begin(), selected));
+    }
+  }
+  if (selectedNetworkIndex >= networks.size()) {
+    selectedNetworkIndex = 0;
+  }
+
+  requestUpdate();
+}
+
 void WifiSelectionActivity::processWifiScanResults() {
   const int16_t scanResult = WiFi.scanComplete();
 
@@ -131,6 +182,11 @@ void WifiSelectionActivity::processWifiScanResults() {
   if (scanResult == WIFI_SCAN_FAILED) {
     networks.clear();
     realNetworkCount = 0;
+    if (allowAutoConnect && autoConnectOnly) {
+      LOG_DBG("WIFI", "Auto-connect only requested but WiFi scan failed");
+      onComplete(false);
+      return;
+    }
     appendHiddenNetworkEntry();
     state = WifiSelectionState::NETWORK_LIST;
     selectedNetworkIndex = 0;
@@ -194,7 +250,8 @@ void WifiSelectionActivity::processWifiScanResults() {
   // connected SSID when it is present in scan results; otherwise fall back to
   // the strongest saved network because the list is already sorted with saved
   // networks first and RSSI descending inside each group.
-  if (allowAutoConnect && realNetworkCount > 0) {
+  if (allowAutoConnect && !autoConnectAttempted && realNetworkCount > 0) {
+    autoConnectAttempted = true;
     const std::string lastSsid = WIFI_STORE.getLastConnectedSsid();
     if (!lastSsid.empty()) {
       const auto remembered = std::find_if(networks.begin(), networks.end(), [&lastSsid](const WifiNetworkInfo& network) {
@@ -218,6 +275,12 @@ void WifiSelectionActivity::processWifiScanResults() {
         return;
       }
     }
+  }
+
+  if (allowAutoConnect && autoConnectOnly) {
+    LOG_DBG("WIFI", "Auto-connect only found no saved network in range");
+    onComplete(false);
+    return;
   }
 
   state = WifiSelectionState::NETWORK_LIST;
@@ -316,7 +379,7 @@ void WifiSelectionActivity::setSelectedNetwork(const WifiNetworkInfo& network) {
 }
 
 bool WifiSelectionActivity::connectUsingSavedCredential(const WifiNetworkInfo& network, const bool isAutoConnectAttempt) {
-  const auto* savedCred = WIFI_STORE.findCredential(network.ssid);
+  const auto savedCred = WIFI_STORE.findCredential(network.ssid);
   if (!savedCred || (network.isEncrypted && savedCred->password.empty())) {
     return false;
   }
@@ -344,11 +407,26 @@ void WifiSelectionActivity::attemptConnection() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
 
-  // Set hostname so routers show "CrossPoint-Reader-AABBCCDDEEFF" instead of "esp32-XXXXXXXXXXXX"
+  // Read the hardware-derived station MAC directly: WiFi.macAddress() can
+  // still return a placeholder before the STA netif is ready (upstream
+  // 9b090266).
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+  uint8_t mac[6] = {};
+  const esp_err_t macResult = esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  if (macResult == ESP_OK) {
+    char hostname[sizeof("CrossPoint-Reader-") + 12];
+    snprintf(hostname, sizeof(hostname), "CrossPoint-Reader-%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2],
+             mac[3], mac[4], mac[5]);
+    WiFi.setHostname(hostname);
+  } else {
+    LOG_ERR("WIFI", "Failed to read station MAC for hostname (err=%d)", static_cast<int>(macResult));
+  }
+#else
   String mac = WiFi.macAddress();
   mac.replace(":", "");
-  String hostname = "CrossPoint-Reader-" + mac;
+  const String hostname = "CrossPoint-Reader-" + mac;
   WiFi.setHostname(hostname.c_str());
+#endif
 
   const char* password = (selectedRequiresPassword && !enteredPassword.empty()) ? enteredPassword.c_str() : nullptr;
   if (selectedHasBssid && selectedChannel > 0) {
@@ -418,6 +496,15 @@ void WifiSelectionActivity::checkConnectionStatus() {
     if (status == WL_NO_SSID_AVAIL) {
       connectionError = tr(STR_ERROR_NETWORK_NOT_FOUND);
     }
+    // Stop the SDK from retrying in the background while the user is back in
+    // the list; the timeout path below does the same.
+    WiFi.disconnect();
+    if (autoConnectOnly) {
+      LOG_DBG("WIFI", "Auto-connect only failed for saved network %s (status=%d)", selectedSSID.c_str(),
+              static_cast<int>(status));
+      onComplete(false);
+      return;
+    }
     state = WifiSelectionState::CONNECTION_FAILED;
     requestUpdate();
     return;
@@ -429,6 +516,11 @@ void WifiSelectionActivity::checkConnectionStatus() {
             static_cast<int>(status), static_cast<int>(selectedChannel), selectedHasBssid ? 1 : 0);
     WiFi.disconnect();
     connectionError = tr(STR_ERROR_CONNECTION_TIMEOUT);
+    if (autoConnectOnly) {
+      LOG_DBG("WIFI", "Auto-connect only timed out for saved network %s", selectedSSID.c_str());
+      onComplete(false);
+      return;
+    }
     state = WifiSelectionState::CONNECTION_FAILED;
     requestUpdate();
     return;
@@ -522,10 +614,10 @@ void WifiSelectionActivity::loop() {
         }
       }
       // Go back to network list (whether Cancel or Forget network was selected)
-      startWifiScan();
+      returnToNetworkList();
     } else if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       // Skip forgetting, go back to network list
-      startWifiScan();
+      returnToNetworkList();
     }
     return;
   }
@@ -540,19 +632,21 @@ void WifiSelectionActivity::loop() {
 
   // Handle connection failed state
   if (state == WifiSelectionState::CONNECTION_FAILED) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
-        mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      // If we were auto-connecting or using a saved credential, offer to forget
-      // the network
-      if (autoConnecting || usedSavedPassword) {
+    // Back always dismisses straight to the network list. Only Confirm opts in
+    // to the forget prompt, and only when a saved credential is what failed.
+    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+      returnToNetworkList();
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      if (usedSavedPassword) {
         autoConnecting = false;
         state = WifiSelectionState::FORGET_PROMPT;
         forgetPromptSelection = 0;  // Default to "Cancel"
+        requestUpdate();
       } else {
-        // Go back to network list on failure for non-saved credentials
-        state = WifiSelectionState::NETWORK_LIST;
+        returnToNetworkList();
       }
-      requestUpdate();
       return;
     }
   }
@@ -633,7 +727,8 @@ void WifiSelectionActivity::render(RenderLock&&) {
   const auto pageHeight = renderer.getScreenHeight();
 
   // Draw header
-  char countStr[32];
+  // Translated UTF-8 labels can occupy substantially more bytes than English.
+  char countStr[64];
   snprintf(countStr, sizeof(countStr), tr(STR_NETWORKS_FOUND), realNetworkCount);
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_WIFI_NETWORKS),
                  countStr);
@@ -806,8 +901,10 @@ void WifiSelectionActivity::renderConnectionFailed() const {
   renderer.drawCenteredText(UI_12_FONT_ID, top - 20, tr(STR_CONNECTION_FAILED), true, EpdFontFamily::BOLD);
   renderer.drawCenteredText(UI_10_FONT_ID, top + 20, connectionError.c_str());
 
-  // Use centralized button hints
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DONE), "", "");
+  // Confirm only leads to the forget prompt when a saved credential failed;
+  // otherwise it just dismisses like Back does.
+  const char* confirmLabel = usedSavedPassword ? tr(STR_FORGET_BUTTON) : tr(STR_DONE);
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 

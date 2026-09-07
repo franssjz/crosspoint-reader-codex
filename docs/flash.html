@@ -211,7 +211,7 @@
 
     .device-options {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 8px;
     }
 
@@ -245,6 +245,13 @@
     .device-option span {
       color: var(--muted);
       font-size: 12px;
+      font-weight: 700;
+    }
+
+    .device-unsupported-note {
+      margin: 10px 0 0;
+      color: var(--warning);
+      font-size: 13px;
       font-weight: 700;
     }
 
@@ -533,18 +540,23 @@
           <div class="device-options" role="radiogroup" aria-labelledby="device-model-title">
             <button class="device-option" type="button" role="radio" aria-checked="true" data-device="x4">
               <strong data-site-i18n="deviceX4">Xteink X4</strong>
-              <span>6.4 MB OTA slot</span>
+              <span>ESP32-C3 · 6.4 MB OTA slot</span>
             </button>
             <button class="device-option" type="button" role="radio" aria-checked="false" data-device="x3">
               <strong data-site-i18n="deviceX3">Xteink X3</strong>
-              <span>7.4 MB OTA slot</span>
+              <span>ESP32-C3 · 7.4 MB OTA slot</span>
+            </button>
+            <button class="device-option" type="button" role="radio" aria-checked="false" disabled>
+              <strong data-site-i18n="deviceX4Pro">Xteink X4 Pro</strong>
+              <span data-site-i18n="deviceX4ProStatus">Not supported · ESP32-S3</span>
             </button>
           </div>
+          <p class="device-unsupported-note" data-site-i18n="deviceX4ProUnsupported">X4 Pro is not compatible with the current ESP32-C3 firmware. It needs a separate ESP32-S3 build; do not select X4 for an X4 Pro.</p>
         </div>
 
         <div class="version-box">
           <span data-site-i18n="latestPackage">Latest firmware package</span>
-          <strong id="firmware-version">1.5.0.5-cpr-vcodex</strong>
+          <strong id="firmware-version">1.5.0.24-cpr-vcodex</strong>
           <dl class="firmware-details">
             <div class="detail-row">
               <dt class="detail-label" data-site-i18n="firmwareSource">Source</dt>
@@ -552,7 +564,7 @@
             </div>
             <div class="detail-row">
               <dt class="detail-label" data-site-i18n="firmwareAsset">Asset</dt>
-              <dd class="detail-value" id="firmware-asset">1.5.0.5-cpr-vcodex.bin</dd>
+              <dd class="detail-value" id="firmware-asset">1.5.0.24-cpr-vcodex.bin</dd>
             </div>
             <div class="detail-row">
               <dt class="detail-label" data-site-i18n="firmwareSize">Size</dt>
@@ -586,7 +598,7 @@
         <p class="status" id="status" data-site-i18n="readyStatus">Ready. Clicking Flash will open the browser serial device chooser.</p>
 
         <div class="actions">
-          <a class="button" id="download-link" href="https://github.com/franssjz/cpr-vcodex/releases/download/1.5.0.5-cpr-vcodex/1.5.0.5-cpr-vcodex.bin" data-site-i18n="downloadBin">Download .bin</a>
+          <a class="button" id="download-link" href="https://github.com/franssjz/cpr-vcodex/releases/download/1.5.0.24-cpr-vcodex/1.5.0.24-cpr-vcodex.bin" data-site-i18n="downloadBin">Download .bin</a>
           <a class="button" href="https://xteink.dve.al/" rel="noopener" data-site-i18n="communityFlasher">Community flasher</a>
         </div>
 
@@ -650,6 +662,14 @@ pio run -e gh_release -t upload</code></pre>
         ]
       }
     };
+    const X4_PRO_PARTITIONS = [
+      {type: "data-nvs", offset: 0x9000, size: 0x5000},
+      {type: "data-ota", offset: 0xe000, size: 0x2000},
+      {type: "app-ota_0", offset: 0x10000, size: 0x7e0000},
+      {type: "app-ota_1", offset: 0x7f0000, size: 0x7e0000},
+      {type: "data-spiffs", offset: 0xfd0000, size: 0x14000},
+      {type: "data-coredump", offset: 0xfe4000, size: 0x1c000}
+    ];
     const STEP_IDS = [
       "connect",
       "partition",
@@ -692,16 +712,16 @@ pio run -e gh_release -t upload</code></pre>
       }
     };
     const FALLBACK_RELEASE = {
-      version: "1.5.0.5-cpr-vcodex",
+      version: "1.5.0.24-cpr-vcodex",
       firmwareUrl: "firmware/firmware.bin",
-      downloadUrl: "https://github.com/franssjz/cpr-vcodex/releases/download/1.5.0.5-cpr-vcodex/1.5.0.5-cpr-vcodex.bin",
-      size: 6091632,
-      sha256: "be219745a465aa11b6647b98fee0eb69220eeaa35b28cc564695f50aa8dd1413",
+      downloadUrl: "https://github.com/franssjz/cpr-vcodex/releases/download/1.5.0.24-cpr-vcodex/1.5.0.24-cpr-vcodex.bin",
+      size: 6141856,
+      sha256: "9d6f2dfcd5cf131b77c32b5bb27ee9fac9d593ada19dc89d0775cc5bd6146c09",
       source: {
         type: "github-release",
         repo: "franssjz/cpr-vcodex",
-        tag: "1.5.0.5-cpr-vcodex",
-        asset: "1.5.0.5-cpr-vcodex.bin"
+        tag: "1.5.0.24-cpr-vcodex",
+        asset: "1.5.0.24-cpr-vcodex.bin"
       }
     };
 
@@ -1037,14 +1057,10 @@ pio run -e gh_release -t upload</code></pre>
     }
 
     function validatePartitionTable(table, device) {
-      const ok = table.length === device.partitions.length &&
-        device.partitions.every((expected, index) => {
-          const actual = table[index];
-          return actual &&
-            actual.type === expected.type &&
-            actual.offset === expected.offset &&
-            actual.size === expected.size;
-        });
+      if (partitionTablesMatch(table, X4_PRO_PARTITIONS)) {
+        throw new Error(siteT("partitionUnsupportedX4Pro"));
+      }
+      const ok = partitionTablesMatch(table, device.partitions);
       if (!ok) {
         throw new Error(
           `${siteT("partitionUnexpected", {device: device.label})}\n` +
@@ -1052,6 +1068,17 @@ pio run -e gh_release -t upload</code></pre>
           JSON.stringify(table, null, 2)
         );
       }
+    }
+
+    function partitionTablesMatch(table, expectedPartitions) {
+      return table.length === expectedPartitions.length &&
+        expectedPartitions.every((expected, index) => {
+          const actual = table[index];
+          return actual &&
+            actual.type === expected.type &&
+            actual.offset === expected.offset &&
+            actual.size === expected.size;
+        });
     }
 
     class OtaPartition {

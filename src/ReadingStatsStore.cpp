@@ -28,7 +28,6 @@ constexpr unsigned long MAX_READING_GAP_MS = 30UL * 60UL * 1000UL;
 constexpr unsigned long SESSION_HEARTBEAT_MS = 60UL * 1000UL;
 constexpr unsigned long DEFERRED_SAVE_INTERVAL_MS = 30UL * 1000UL;
 constexpr uint64_t MIN_SESSION_READING_MS = 3ULL * 60ULL * 1000ULL;
-constexpr size_t MAX_SESSION_LOG_ENTRIES = 256;
 
 uint8_t clampPercent(const uint8_t percent) { return std::min<uint8_t>(percent, 100); }
 
@@ -776,11 +775,16 @@ void ReadingStatsStore::appendSessionLogEntry(const uint32_t dayOrdinal, const u
     return;
   }
 
-  sessionLog.push_back(ReadingSessionLogEntry{dayOrdinal, sessionMs, book.bookId, book.path});
-  if (sessionLog.size() > MAX_SESSION_LOG_ENTRIES) {
-    sessionLog.erase(sessionLog.begin(),
-                     sessionLog.begin() + static_cast<std::ptrdiff_t>(sessionLog.size() - MAX_SESSION_LOG_ENTRIES));
+  ReadingSessionLog::makeRoomForAppend(sessionLog);
+
+  ReadingSessionLogEntry entry;
+  entry.dayOrdinal = dayOrdinal;
+  entry.sessionMs = sessionMs;
+  entry.bookId = book.bookId;
+  if (entry.bookId.empty()) {
+    entry.path = book.path;
   }
+  sessionLog.push_back(std::move(entry));
 }
 
 bool ReadingStatsStore::convertLegacyReadingDaysToUnassigned() {
@@ -1715,9 +1719,9 @@ bool ReadingStatsStore::importFromFile(const std::string& path) {
   activeSession = {};
   lastSessionSnapshot = {};
   sessionSerialCounter = 0;
-  if (sessionLog.size() > MAX_SESSION_LOG_ENTRIES) {
-    sessionLog.erase(sessionLog.begin(),
-                     sessionLog.begin() + static_cast<std::ptrdiff_t>(sessionLog.size() - MAX_SESSION_LOG_ENTRIES));
+  if (sessionLog.size() > ReadingSessionLog::MAX_ENTRIES) {
+    sessionLog.erase(sessionLog.begin(), sessionLog.begin() + static_cast<std::ptrdiff_t>(
+                                                                  sessionLog.size() - ReadingSessionLog::MAX_ENTRIES));
   }
   removeIgnoredBooks();
   rebuildAggregatedReadingDays();
@@ -1784,9 +1788,10 @@ bool ReadingStatsStore::loadFromFile() {
     activeSession = {};
     lastSessionSnapshot = {};
     sessionSerialCounter = 0;
-    if (sessionLog.size() > MAX_SESSION_LOG_ENTRIES) {
-      sessionLog.erase(sessionLog.begin(),
-                       sessionLog.begin() + static_cast<std::ptrdiff_t>(sessionLog.size() - MAX_SESSION_LOG_ENTRIES));
+    if (sessionLog.size() > ReadingSessionLog::MAX_ENTRIES) {
+      sessionLog.erase(
+          sessionLog.begin(),
+          sessionLog.begin() + static_cast<std::ptrdiff_t>(sessionLog.size() - ReadingSessionLog::MAX_ENTRIES));
     }
     invalidateSummaryCache();
     if (needsSave) {

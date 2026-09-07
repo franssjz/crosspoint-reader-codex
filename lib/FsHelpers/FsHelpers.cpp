@@ -1,7 +1,10 @@
 #include "FsHelpers.h"
 
+#include <HalStorage.h>
+
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <string_view>
 #include <vector>
@@ -16,7 +19,50 @@ uint8_t hexValue(const char c) {
   if (c >= 'a' && c <= 'f') return static_cast<uint8_t>(10 + (c - 'a'));
   return static_cast<uint8_t>(10 + (c - 'A'));
 }
+
+bool equalsIgnoreCase(const char* left, const char* right) {
+  while (*left && *right) {
+    if (std::tolower(static_cast<unsigned char>(*left)) != std::tolower(static_cast<unsigned char>(*right))) {
+      return false;
+    }
+    ++left;
+    ++right;
+  }
+  return *left == '\0' && *right == '\0';
+}
 }  // namespace
+
+bool resolveRootDirectoryIgnoreCase(const char* expectedPath, char* resolvedPath, const size_t resolvedPathSize) {
+  if (!expectedPath || expectedPath[0] != '/' || expectedPath[1] == '\0' || strchr(expectedPath + 1, '/') ||
+      !resolvedPath || resolvedPathSize == 0) {
+    return false;
+  }
+
+  // Always enumerate the root. FAT lookups are case-insensitive, so opening
+  // expectedPath directly cannot tell us the spelling stored in the directory
+  // entry (for example, /fonts may successfully open /FoNtS).
+  FsFile root = Storage.open("/");
+  if (!root || !root.isDirectory()) {
+    if (root) root.close();
+    return false;
+  }
+
+  char name[256];
+  const char* expectedName = expectedPath + 1;
+  for (FsFile entry = root.openNextFile(); entry; entry = root.openNextFile()) {
+    const bool isDirectory = entry.isDirectory();
+    entry.getName(name, sizeof(name));
+    entry.close();
+    if (!isDirectory || !equalsIgnoreCase(name, expectedName)) continue;
+
+    const int written = snprintf(resolvedPath, resolvedPathSize, "/%s", name);
+    root.close();
+    return written > 0 && static_cast<size_t>(written) < resolvedPathSize;
+  }
+
+  root.close();
+  return false;
+}
 
 std::string decodeUriEscapes(const std::string& path) {
   std::string decoded;

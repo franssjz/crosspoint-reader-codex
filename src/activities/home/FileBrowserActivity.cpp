@@ -74,12 +74,19 @@ void sortFileList(std::vector<std::string>& strs) {
 }
 
 void FileBrowserActivity::loadFiles() {
-  files.clear();
-  completedFileStates.clear();
+  const std::string loadedBasepath = basepath;
+  std::vector<std::string> loadedFiles;
+  std::vector<uint8_t> loadedCompletedFileStates;
+  const auto publishSnapshot = [this, &loadedFiles, &loadedCompletedFileStates]() {
+    RenderLock lock(*this);
+    files.swap(loadedFiles);
+    completedFileStates.swap(loadedCompletedFileStates);
+  };
 
-  auto root = Storage.open(basepath.c_str());
+  auto root = Storage.open(loadedBasepath.c_str());
   if (!root || !root.isDirectory()) {
     if (root) root.close();
+    publishSnapshot();
     return;
   }
 
@@ -88,6 +95,7 @@ void FileBrowserActivity::loadFiles() {
   if (!fileNameBuffer) {
     LOG_ERR("FileBrowser", "fileNameBuffer not allocated");
     root.close();
+    publishSnapshot();
     return;
   }
 
@@ -100,36 +108,40 @@ void FileBrowserActivity::loadFiles() {
     }
 
     if (file.isDirectory()) {
-      files.emplace_back(std::string(fileNameBuffer.get()) + "/");
+      loadedFiles.emplace_back(std::string(fileNameBuffer.get()) + "/");
     } else {
       std::string_view filename{fileNameBuffer.get()};
       if ((mode == Mode::PickFirmware && FsHelpers::checkFileExtension(filename, ".bin")) ||
           (mode == Mode::Books && (FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
                                    FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename) ||
                                    FsHelpers::hasBmpExtension(filename)))) {
-        files.emplace_back(filename);
+        loadedFiles.emplace_back(filename);
       }
     }
     file.close();
   }
   root.close();
-  sortFileList(files);
+  sortFileList(loadedFiles);
 
-  completedFileStates.reserve(files.size());
-  std::string fullPathPrefix = basepath;
+  loadedCompletedFileStates.reserve(loadedFiles.size());
+  std::string fullPathPrefix = loadedBasepath;
   if (fullPathPrefix.empty() || fullPathPrefix.back() != '/') {
     fullPathPrefix += "/";
   }
 
-  for (const auto& entry : files) {
+  for (const auto& entry : loadedFiles) {
     if (entry.empty() || entry.back() == '/') {
-      completedFileStates.push_back(0);
+      loadedCompletedFileStates.push_back(0);
       continue;
     }
 
     const auto* statsBook = READING_STATS.findBook(fullPathPrefix + entry);
-    completedFileStates.push_back((statsBook != nullptr && statsBook->completed) ? 1 : 0);
+    loadedCompletedFileStates.push_back((statsBook != nullptr && statsBook->completed) ? 1 : 0);
   }
+
+  // Rendering runs on a separate task. Publish the fully built snapshot in one
+  // short critical section so callbacks never observe a vector mid-reallocation.
+  publishSnapshot();
 }
 
 void FileBrowserActivity::onEnter() {
@@ -168,6 +180,7 @@ void FileBrowserActivity::onEnter() {
 
 void FileBrowserActivity::onExit() {
   Activity::onExit();
+  // ActivityManager calls onExit while already holding RenderLock.
   files.clear();
   completedFileStates.clear();
   fileNameBuffer.reset();
@@ -415,41 +428,62 @@ void FileBrowserActivity::render(RenderLock&&) {
   if (files.empty()) {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, tr(STR_NO_FILES_FOUND));
   } else {
+    const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, false, pathReserved);
+    const size_t first = (selectorIndex / pageItems) * pageItems;
+    const size_t count = std::min(files.size() - first, static_cast<size_t>(pageItems));
+    struct PrewarmCtx {
+      const std::vector<std::string>* files;
+      size_t first;
+    } ctx{&files, first};
+    const auto getter = [](const void* raw, uint32_t i) -> const char* {
+      const auto* context = static_cast<const PrewarmCtx*>(raw);
+      return (*context->files)[context->first + i].c_str();
+    };
+    renderer.prewarmFallbackText(UI_10_FONT_ID, getter, &ctx, count);
+    renderer.prewarmFallbackText(SMALL_FONT_ID, getter, &ctx, count);
     GUI.drawList(
         renderer, Rect{0, contentTop, pageWidth, contentHeight}, files.size(), selectorIndex,
         [this](int index) { return getFileName(files[index]); }, nullptr,
         [this](int index) { return UITheme::getFileIcon(files[index]); },
-        [this](int index) { return getFileExtension(files[index]); }, false,
+        [this](int index) {
+          return SETTINGS.hideFileExtension ? std::string() : getFileExtension(files[index]);
+        },
+        false,
         [this](int index) {
           return index >= 0 && index < static_cast<int>(completedFileStates.size()) && completedFileStates[index] != 0;
         });
   }
 
-  // Full path display
+  // Show the selected entry in full when it fits. When it does not, preserve
+  // the suffix here because the list row already shows the beginning; this is
+  // especially useful for books whose distinguishing text is near the end.
   {
     const int pathY = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - pathLineHeight;
     const int separatorY = pathY - metrics.verticalSpacing / 2;
     renderer.drawLine(0, separatorY, pageWidth - 1, separatorY, 3, true);
-    const int pathMaxWidth = pageWidth - metrics.contentSidePadding * 2;
-    // Left-truncate so the deepest directory is always visible
-    const char* pathStr = basepath.c_str();
-    const char* pathDisplay = pathStr;
+    const int infoMaxWidth = pageWidth - metrics.contentSidePadding * 2;
+    const bool hasSelection = !files.empty() && selectorIndex >= 0 && selectorIndex < static_cast<int>(files.size());
+    const char* infoStr = hasSelection ? files[selectorIndex].c_str() : basepath.c_str();
+    renderer.prewarmFallbackText(
+        SMALL_FONT_ID, [](const void* raw, uint32_t) { return static_cast<const char* const*>(raw)[0]; }, &infoStr,
+        1);
+    const char* infoDisplay = infoStr;
     char leftTruncBuf[256];
-    if (renderer.getTextWidth(SMALL_FONT_ID, pathStr) > pathMaxWidth) {
+    if (renderer.getTextWidth(SMALL_FONT_ID, infoStr) > infoMaxWidth) {
       const char ellipsis[] = "\xe2\x80\xa6";  // UTF-8 ellipsis (…)
       const int ellipsisWidth = renderer.getTextWidth(SMALL_FONT_ID, ellipsis);
-      const int available = pathMaxWidth - ellipsisWidth;
+      const int available = infoMaxWidth - ellipsisWidth;
       // Walk forward from the start until the suffix fits, skipping UTF-8 continuation bytes
-      const char* p = pathStr;
+      const char* p = infoStr;
       while (*p) {
         if (renderer.getTextWidth(SMALL_FONT_ID, p) <= available) break;
         ++p;
         while (*p && (static_cast<unsigned char>(*p) & 0xC0) == 0x80) ++p;
       }
       snprintf(leftTruncBuf, sizeof(leftTruncBuf), "%s%s", ellipsis, p);
-      pathDisplay = leftTruncBuf;
+      infoDisplay = leftTruncBuf;
     }
-    renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, pathY, pathDisplay);
+    renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, pathY, infoDisplay);
   }
 
   // Help text

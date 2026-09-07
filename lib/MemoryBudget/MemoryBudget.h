@@ -4,7 +4,6 @@
 #include <Logging.h>
 
 #include <cstdint>
-#include <cstring>
 
 namespace MemoryBudget {
 
@@ -13,14 +12,6 @@ struct HeapSnapshot {
   uint32_t maxAllocHeap;
 };
 
-struct HeapRequirement {
-  uint32_t minFree;
-  uint32_t minMaxAlloc;
-};
-
-constexpr uint32_t EPUB_INLINE_IMAGE_MIN_FREE = 72U * 1024U;
-constexpr uint32_t EPUB_INLINE_IMAGE_MIN_MAX_ALLOC = 48U * 1024U;
-constexpr uint32_t EPUB_INLINE_JPEG_MIN_MAX_ALLOC = 36U * 1024U;
 constexpr uint32_t EPUB_INLINE_IMAGE_SD_FONT_RELEASE_MIN_FREE = 120U * 1024U;
 constexpr uint32_t EPUB_INLINE_IMAGE_SD_FONT_RELEASE_MIN_MAX_ALLOC = 80U * 1024U;
 constexpr uint32_t OPTIONAL_EPUB_REBUILD_MIN_FREE = 96U * 1024U;
@@ -33,44 +24,8 @@ inline bool hasHeap(const HeapSnapshot heap, const uint32_t minFree, const uint3
   return heap.freeHeap >= minFree && heap.maxAllocHeap >= minMaxAlloc;
 }
 
-inline char asciiLower(const char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; }
-
-inline bool endsWithIgnoreCase(const char* value, const char* suffix) {
-  if (!value || !suffix) return false;
-  const size_t valueLen = strlen(value);
-  const size_t suffixLen = strlen(suffix);
-  if (suffixLen > valueLen) return false;
-
-  const char* valueTail = value + valueLen - suffixLen;
-  for (size_t i = 0; i < suffixLen; ++i) {
-    if (asciiLower(valueTail[i]) != asciiLower(suffix[i])) return false;
-  }
-  return true;
-}
-
-inline bool isJpegSource(const char* source) {
-  return endsWithIgnoreCase(source, ".jpg") || endsWithIgnoreCase(source, ".jpeg");
-}
-
-inline HeapRequirement epubInlineImageRequirementForSource(const char* source) {
-  return {EPUB_INLINE_IMAGE_MIN_FREE,
-          isJpegSource(source) ? EPUB_INLINE_JPEG_MIN_MAX_ALLOC : EPUB_INLINE_IMAGE_MIN_MAX_ALLOC};
-}
-
 inline bool shouldReleaseSdFontCachesForEpubInlineImage(const HeapSnapshot heap) {
   return !hasHeap(heap, EPUB_INLINE_IMAGE_SD_FONT_RELEASE_MIN_FREE, EPUB_INLINE_IMAGE_SD_FONT_RELEASE_MIN_MAX_ALLOC);
-}
-
-inline bool hasHeapForEpubInlineImage(const char* tag, const char* source) {
-  const auto heap = snapshot();
-  const auto requirement = epubInlineImageRequirementForSource(source);
-  if (hasHeap(heap, requirement.minFree, requirement.minMaxAlloc)) {
-    return true;
-  }
-
-  LOG_ERR(tag, "Low heap for inline image (%u free, %u max alloc, need %u/%u); suppressing %s", heap.freeHeap,
-          heap.maxAllocHeap, requirement.minFree, requirement.minMaxAlloc, source ? source : "");
-  return false;
 }
 
 inline bool hasHeapForOptionalEpubRebuild(const char* tag, const char* action, const int spineIndex) {

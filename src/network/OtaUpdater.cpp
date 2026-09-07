@@ -185,6 +185,8 @@ OtaUpdater::OtaUpdaterError mapFlashError(firmware_flash::Result result) {
       return OtaUpdater::OK;
     case firmware_flash::Result::OOM:
       return OtaUpdater::OOM_ERROR;
+    case firmware_flash::Result::BAD_CHIP:
+      return OtaUpdater::WRONG_DEVICE_ERROR;
     default:
       return OtaUpdater::INTERNAL_UPDATE_ERROR;
   }

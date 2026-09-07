@@ -89,7 +89,10 @@ void BookmarksActivity::confirmDeleteSelectedBookmark() {
                                                   current.endPageNumber == bookmark.endPageNumber &&
                                                   current.startWordIndex == bookmark.startWordIndex &&
                                                   current.endWordIndex == bookmark.endWordIndex &&
-                                                  current.snippet == bookmark.snippet;
+                                                  current.snippet == bookmark.snippet &&
+                                                  current.hasVisibleTextOffset == bookmark.hasVisibleTextOffset &&
+                                                  (!current.hasVisibleTextOffset ||
+                                                   current.visibleTextOffset == bookmark.visibleTextOffset);
                                          }),
                           bookmarks.end());
 
@@ -122,7 +125,8 @@ void BookmarksActivity::loop() {
 
     if (!bookmarks.empty()) {
       const auto& bookmark = bookmarks[selectorIndex];
-      setResult(BookmarkResult{static_cast<int>(bookmark.spineIndex), bookmark.pageNumber});
+      setResult(BookmarkResult{static_cast<int>(bookmark.spineIndex), bookmark.pageNumber,
+                               bookmark.hasVisibleTextOffset, bookmark.visibleTextOffset});
       finish();
     }
     return;

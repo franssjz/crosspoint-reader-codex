@@ -48,6 +48,8 @@ class Activity {
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
   virtual bool isReaderActivity() const { return false; }
+  // Returns true when the activity schedules a reader-aware forced refresh.
+  virtual bool handleForcedRefresh() { return false; }
   virtual uint8_t getUiTransitionRefreshWeight() const { return UI_TRANSITION_REFRESH_WEIGHT_NONE; }
   virtual ScreenshotInfo getScreenshotInfo() const { return {}; }
 

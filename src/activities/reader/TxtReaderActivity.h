@@ -61,6 +61,8 @@ class TxtReaderActivity final : public Activity {
   void savePageIndexCache() const;
   void saveProgress() const;
   void loadProgress();
+  bool skipPages(int amount);
+  bool isAtEndOfBook() const { return initialized && currentPage >= totalPages; }
   void requestCurrentPageFullRefresh();
   void toggleTemporaryStatusBar();
   std::string moveCompletedBookIfEnabled();
@@ -74,5 +76,14 @@ class TxtReaderActivity final : public Activity {
   void loop() override;
   void render(RenderLock&&) override;
   bool isReaderActivity() const override { return true; }
+  bool handleForcedRefresh() override {
+    {
+      RenderLock lock(*this);
+      pagesUntilFullRefresh = 1;
+      pendingForceFullRefresh = true;
+    }
+    requestUpdate();
+    return true;
+  }
   ScreenshotInfo getScreenshotInfo() const override;
 };

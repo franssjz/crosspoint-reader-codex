@@ -1,6 +1,7 @@
 #pragma once
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "../../fontIds.h"
 #include "../Activity.h"
@@ -14,9 +15,10 @@ class ConfirmationActivity : public Activity {
   const int margin = 20;
   const int spacing = 30;
   const int fontId = UI_10_FONT_ID;
+  static constexpr int MAX_BODY_LINES = 6;
 
   std::string safeHeading;
-  std::string safeBody;
+  std::vector<std::string> bodyLines;
   int startY = 0;
   int lineHeight = 0;
 

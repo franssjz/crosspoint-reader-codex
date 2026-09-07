@@ -265,9 +265,11 @@ void ActivityManager::goToKOReaderSync() {
       KOReaderPosition{sync.localKoReaderProgress, sync.localKoReaderPercentage}, sync.localChapterLabel));
 }
 
-void ActivityManager::goToEpubBookmark(std::string path, const int spineIndex, const uint32_t page) {
+void ActivityManager::goToEpubBookmark(std::string path, const int spineIndex, const uint32_t page,
+                                       const bool hasVisibleTextOffset, const uint32_t visibleTextOffset) {
   replaceActivity(std::make_unique<ReaderActivity>(
-      renderer, mappedInput, std::move(path), ReaderActivity::EpubBookmarkLaunch{true, spineIndex, page}));
+      renderer, mappedInput, std::move(path),
+      ReaderActivity::EpubBookmarkLaunch{true, spineIndex, page, hasVisibleTextOffset, visibleTextOffset}));
 }
 
 void ActivityManager::goToSleep() {
@@ -307,6 +309,8 @@ void ActivityManager::popActivity() {
 bool ActivityManager::preventAutoSleep() const { return currentActivity && currentActivity->preventAutoSleep(); }
 
 bool ActivityManager::isReaderActivity() const { return currentActivity && currentActivity->isReaderActivity(); }
+
+bool ActivityManager::handleForcedRefresh() { return currentActivity && currentActivity->handleForcedRefresh(); }
 
 bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }
 

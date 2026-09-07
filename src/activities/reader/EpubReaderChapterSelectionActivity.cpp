@@ -111,16 +111,26 @@ void EpubReaderChapterSelectionActivity::render(RenderLock&&) {
   renderer.drawText(UI_12_FONT_ID, titleX, 15 + contentY, tr(STR_SELECT_CHAPTER), true, EpdFontFamily::BOLD);
 
   const auto pageStartIndex = selectorIndex / pageItems * pageItems;
+  std::vector<decltype(epub->getTocItem(0))> visibleItems;
+  visibleItems.reserve(pageItems);
+  for (int i = 0; i < pageItems && pageStartIndex + i < totalItems; i++) {
+    visibleItems.push_back(epub->getTocItem(pageStartIndex + i));
+  }
+  renderer.prewarmFallbackText(
+      UI_10_FONT_ID,
+      [](const void* raw, uint32_t i) {
+        return (*static_cast<const decltype(visibleItems)*>(raw))[i].title.c_str();
+      },
+      &visibleItems, visibleItems.size());
   // Highlight only the content area, not the hint gutters.
   renderer.fillRect(contentX, 60 + contentY + (selectorIndex % pageItems) * 30 - 2, contentWidth - 1, 30);
 
-  for (int i = 0; i < pageItems; i++) {
+  for (int i = 0; i < static_cast<int>(visibleItems.size()); i++) {
     int itemIndex = pageStartIndex + i;
-    if (itemIndex >= totalItems) break;
     const int displayY = 60 + contentY + i * 30;
     const bool isSelected = (itemIndex == selectorIndex);
 
-    auto item = epub->getTocItem(itemIndex);
+    const auto& item = visibleItems[i];
 
     // Indent per TOC level while keeping content within the gutter-safe region.
     const int indentSize = contentX + 20 + (item.level - 1) * 15;

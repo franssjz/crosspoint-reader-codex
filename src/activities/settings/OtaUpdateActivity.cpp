@@ -186,10 +186,16 @@ void OtaUpdateActivity::render(RenderLock&&) {
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == FAILED) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_FAILED), true, EpdFontFamily::BOLD);
-    renderer.drawCenteredText(UI_10_FONT_ID, top + height + metrics.verticalSpacing,
+    int detailOffset = 1;
+    if (failedDetail) {
+      renderer.drawCenteredText(UI_10_FONT_ID, top + height + metrics.verticalSpacing, failedDetail);
+      detailOffset = 2;
+    }
+    renderer.drawCenteredText(UI_10_FONT_ID, top + height * detailOffset + metrics.verticalSpacing * detailOffset,
                               (std::string(tr(STR_CURRENT_VERSION)) + CROSSPOINT_VERSION).c_str());
     if (!updater.getLatestVersion().empty()) {
-      renderer.drawCenteredText(UI_10_FONT_ID, top + height * 2 + metrics.verticalSpacing * 2,
+      const int versionOffset = detailOffset + 1;
+      renderer.drawCenteredText(UI_10_FONT_ID, top + height * versionOffset + metrics.verticalSpacing * versionOffset,
                                 buildNewVersionLine(updater).c_str());
     }
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "");
@@ -226,6 +232,7 @@ void OtaUpdateActivity::loop() {
         LOG_DBG("OTA", "Update failed: %d", res);
         {
           RenderLock lock(*this);
+          failedDetail = res == OtaUpdater::WRONG_DEVICE_ERROR ? tr(STR_FIRMWARE_WRONG_DEVICE) : nullptr;
           state = FAILED;
         }
         requestUpdate();

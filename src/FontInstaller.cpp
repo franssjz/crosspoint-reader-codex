@@ -1,5 +1,6 @@
 #include "FontInstaller.h"
 
+#include <FsHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
 
@@ -58,8 +59,10 @@ bool FontInstaller::isValidCpfontFilename(const char* name) {
 bool FontInstaller::ensureFamilyDir(const char* familyName) {
   // Reuse the family's existing root if installed; otherwise pick the
   // default-write root (hidden if no roots exist yet).
-  const char* root = SdCardFontRegistry::findFamilyRoot(familyName);
-  if (!root) root = SdCardFontRegistry::defaultWriteRoot();
+  char root[16];
+  if (!SdCardFontRegistry::findFamilyRoot(familyName, root, sizeof(root))) {
+    SdCardFontRegistry::defaultWriteRoot(root, sizeof(root));
+  }
 
   if (!Storage.exists(root)) {
     if (!Storage.mkdir(root)) {
@@ -107,8 +110,10 @@ bool FontInstaller::validateCpfontFile(const char* path) {
 void FontInstaller::buildFontPath(const char* family, const char* filename, char* outBuf, size_t outBufSize) {
   // Use the same root selection as ensureFamilyDir: existing install dir wins,
   // otherwise the default-write root.
-  const char* root = SdCardFontRegistry::findFamilyRoot(family);
-  if (!root) root = SdCardFontRegistry::defaultWriteRoot();
+  char root[16];
+  if (!SdCardFontRegistry::findFamilyRoot(family, root, sizeof(root))) {
+    SdCardFontRegistry::defaultWriteRoot(root, sizeof(root));
+  }
   snprintf(outBuf, outBufSize, "%s/%s/%s", root, family, filename);
 }
 
@@ -118,7 +123,14 @@ FontInstaller::Error FontInstaller::deleteFamily(const char* familyName) {
   }
 
   // A family may exist in either root (or, edge case, both). Remove from both.
-  const char* roots[] = {SdCardFontRegistry::FONTS_DIR_HIDDEN, SdCardFontRegistry::FONTS_DIR_VISIBLE};
+  char hiddenRoot[16];
+  char visibleRoot[16];
+  const bool hasHidden = FsHelpers::resolveRootDirectoryIgnoreCase(SdCardFontRegistry::FONTS_DIR_HIDDEN, hiddenRoot,
+                                                                   sizeof(hiddenRoot));
+  const bool hasVisible = FsHelpers::resolveRootDirectoryIgnoreCase(SdCardFontRegistry::FONTS_DIR_VISIBLE, visibleRoot,
+                                                                    sizeof(visibleRoot));
+  const char* roots[] = {hasHidden ? hiddenRoot : SdCardFontRegistry::FONTS_DIR_HIDDEN,
+                         hasVisible ? visibleRoot : SdCardFontRegistry::FONTS_DIR_VISIBLE};
   bool removedAny = false;
   bool sawAny = false;
   for (const char* root : roots) {

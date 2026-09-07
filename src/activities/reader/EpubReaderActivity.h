@@ -18,11 +18,13 @@ class EpubReaderActivity final : public Activity {
   int currentSpineIndex = 0;
   int nextPageNumber = 0;
   std::optional<uint16_t> pendingPageJump;
+  std::optional<uint32_t> pendingVisibleTextOffset;
   // Set when navigating to a footnote href with a fragment (e.g. #note1).
   // Cleared on the next render after the new section loads and resolves it to a page.
   std::string pendingAnchor;
   int initialBookmarkSpineIndex = -1;
   int initialBookmarkPage = -1;
+  std::optional<uint32_t> initialBookmarkVisibleTextOffset;
   int pagesUntilFullRefresh = 0;
   int cachedSpineIndex = 0;
   int cachedChapterTotalPageCount = 0;
@@ -114,6 +116,7 @@ class EpubReaderActivity final : public Activity {
   ReaderRenderSpec makeRenderSpec(uint16_t viewportWidth, uint16_t viewportHeight) const;
   bool buildTickHeapGate();
   bool applyDeferredReposition();
+  void clearDeferredReposition();
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
@@ -149,16 +152,27 @@ class EpubReaderActivity final : public Activity {
 
  public:
   explicit EpubReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Epub> epub,
-                              int initialBookmarkSpineIndex = -1, int initialBookmarkPage = -1)
+                              int initialBookmarkSpineIndex = -1, int initialBookmarkPage = -1,
+                              std::optional<uint32_t> initialBookmarkVisibleTextOffset = std::nullopt)
       : Activity("EpubReader", renderer, mappedInput),
         epub(std::move(epub)),
         initialBookmarkSpineIndex(initialBookmarkSpineIndex),
-        initialBookmarkPage(initialBookmarkPage) {}
+        initialBookmarkPage(initialBookmarkPage),
+        initialBookmarkVisibleTextOffset(initialBookmarkVisibleTextOffset) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
   void render(RenderLock&& lock) override;
   bool skipLoopDelay() override { return section && section->isBuilding() && !buildHeapPaused; }
   bool isReaderActivity() const override { return true; }
+  bool handleForcedRefresh() override {
+    {
+      RenderLock lock(*this);
+      pagesUntilFullRefresh = 1;
+      pendingForceFullRefresh = true;
+    }
+    requestUpdate();
+    return true;
+  }
   ScreenshotInfo getScreenshotInfo() const override;
 };

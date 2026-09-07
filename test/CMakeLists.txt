@@ -45,3 +45,13 @@ include(GoogleTest)
 add_subdirectory(utf8_compose)
 add_subdirectory(reader_position)
 add_subdirectory(gray_pipeline)
+add_subdirectory(credential_integrity)
+add_subdirectory(reader_regressions)
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(
+    NAME web_optimizer_regressions
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/web_optimizer_regressions/EpubOptimizerFallbackTest.py
+  )
+endif()

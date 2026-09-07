@@ -39,6 +39,8 @@ struct PageResult {
 struct BookmarkResult {
   int spineIndex = 0;
   uint32_t page = 0;
+  bool hasVisibleTextOffset = false;
+  uint32_t visibleTextOffset = 0;
 };
 
 struct HighlightResult {

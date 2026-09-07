@@ -77,6 +77,10 @@ bool shouldSyncNtpNow() {
   return ageSec >= static_cast<unsigned long>(NTP_RESYNC_MIN_INTERVAL_SEC);
 }
 
+bool isAutomaticSyncIntent(const KOReaderSyncIntentState intent) {
+  return intent == KOReaderSyncIntentState::AUTO_PULL || intent == KOReaderSyncIntentState::AUTO_PUSH;
+}
+
 void wifiOff() {
   TimeUtils::stopNtp();
   WiFi.disconnect(false);
@@ -508,9 +512,12 @@ void KOReaderSyncActivity::onEnter() {
     return;
   }
 
-  const bool chooseWifiManually = SETTINGS.syncDayWifiChoice == CrossPointSettings::SYNC_DAY_WIFI_MANUAL;
+  const bool automaticSync = isAutomaticSyncIntent(syncIntent);
+  const bool chooseWifiManually =
+      !automaticSync && SETTINGS.syncDayWifiChoice == CrossPointSettings::SYNC_DAY_WIFI_MANUAL;
   LOG_DBG("KOSync", "Launching WifiSelectionActivity...");
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, !chooseWifiManually),
+  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, !chooseWifiManually, true,
+                                                                 automaticSync),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
 

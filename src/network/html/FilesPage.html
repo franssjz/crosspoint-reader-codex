@@ -1634,6 +1634,19 @@
               </div>
             </div>
           </div>
+          <!-- Optional Embedded Font Removal -->
+          <div class="advanced-setting-row">
+            <div class="setting-label">
+              <div class="setting-title">🔤 Remove embedded fonts</div>
+              <div class="setting-desc">Optional: reduces EPUB size; CrossPoint uses its own reader fonts</div>
+            </div>
+            <div class="setting-controls">
+              <label class="toggle-switch">
+                <input type="checkbox" id="stripEmbeddedFonts">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
           <!-- Conversion Log Export -->
           <div class="advanced-setting-row">
             <div class="setting-label">
@@ -2085,6 +2098,7 @@
     // Reset to defaults
     document.getElementById('qualitySlider').value = 85;
     document.getElementById('qualityInput').value = 85;
+    document.getElementById('stripEmbeddedFonts').checked = false;
     setHandedness('right');
     setOverlap(5);
     // Update converter variables
@@ -3054,7 +3068,9 @@ let operationCancelled = false; // Set by Cancel to stop conversion loops and up
 let uploadGeneration = 0;       // Incremented each uploadFile() call; guards stale restoreAfterCancel()
 let currentUploadWs = null;     // Active WebSocket reference for external abort
 let currentUploadXhr = null;    // Active XHR reference for external abort
-const WS_PORT = 81;
+// HTTP and WebSocket use adjacent ports on-device and in the simulator.
+const HTTP_PORT = Number(window.location.port || 80);
+const WS_PORT = HTTP_PORT + 1;
 const WS_CHUNK_SIZE = 4096; // 4KB chunks - smaller for ESP32 stability
 
 // ============================================================================
@@ -3590,12 +3606,66 @@ function syncNCXIdentifier(ncxText, mainIdentifier) {
   return t;
 }
 
+// Embedded font removal is optional because optimized EPUBs may also be used
+// in readers that honor their publisher fonts. CrossPoint itself does not.
+const FONT_EXT_REGEX = /\.(ttf|otf|woff2?|eot)$/;
+const FONT_MEDIA_TYPE_REGEX = /^(font\/|application\/font-|application\/x-font-|application\/vnd\.ms-(opentype|fontobject)$)/i;
+
+function collectFontPaths(zip, opfContent, opfPath) {
+  const fontPaths = new Set();
+  zip.forEach(p => { if (FONT_EXT_REGEX.test(p.toLowerCase())) fontPaths.add(p); });
+  if (opfContent && opfPath) {
+    try {
+      const doc = new DOMParser().parseFromString(opfContent, 'application/xml');
+      if (!doc.querySelector('parsererror')) {
+        for (const item of [...doc.getElementsByTagNameNS('*', 'item')]) {
+          const type = item.getAttribute('media-type') || '';
+          const href = item.getAttribute('href') || '';
+          if (href && FONT_MEDIA_TYPE_REGEX.test(type)) {
+            const resolved = resolvePath(opfPath, decodeHref(href));
+            if (zip.files[resolved]) fontPaths.add(resolved);
+          }
+        }
+      }
+    } catch (e) { /* extension detection remains available */ }
+  }
+  return fontPaths;
+}
+
+function stripFontFaceRules(css) {
+  let count = 0;
+  const stripped = css.replace(/@font-face(?:\s|\/\*[\s\S]*?\*\/)*\{[^{}]*\}/gi, () => { count++; return ''; });
+  return { css: stripped, count };
+}
+
+function stripFontEncryptionEntries(xmlText, fontPaths) {
+  try {
+    const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
+    if (doc.querySelector('parsererror')) return { modified: false };
+    let removed = 0;
+    for (const entry of [...doc.getElementsByTagNameNS('*', 'EncryptedData')]) {
+      const ref = entry.getElementsByTagNameNS('*', 'CipherReference')[0];
+      const uri = ref ? decodeHref(ref.getAttribute('URI') || '') : '';
+      if (fontPaths.has(uri.replace(/^\//, ''))) {
+        entry.parentNode.removeChild(entry);
+        removed++;
+      }
+    }
+    if (!removed) return { modified: false };
+    const remaining = doc.getElementsByTagNameNS('*', 'EncryptedData').length +
+                      doc.getElementsByTagNameNS('*', 'EncryptedKey').length;
+    return remaining === 0 ? { dropFile: true } : { modified: true, xml: safeSerialize(doc, xmlText) };
+  } catch (e) {
+    return { modified: false };
+  }
+}
+
 /**
  * Fix OPF content: fix media-types, strip svg properties,
  * update split image manifest entries, ensure cover meta.
  * DOMParser with regex fallback.
  */
-function fixOPF(opfText, opfOriginal, opfDir, splitImages = {}) {
+function fixOPF(opfText, opfOriginal, opfDir, splitImages = {}, fontPaths = null) {
   let t = opfText;
 
   try {
@@ -3622,6 +3692,15 @@ function fixOPF(opfText, opfOriginal, opfDir, splitImages = {}) {
         const newProps = props.split(/\s+/).filter(p => p !== 'svg').join(' ').trim();
         if (newProps) item.setAttribute('properties', newProps);
         else item.removeAttribute('properties');
+      }
+    }
+
+    // Update split image hrefs and add manifest entries for parts
+    if (fontPaths && fontPaths.size) {
+      for (const item of items) {
+        const href = decodeHref(item.getAttribute('href') || '');
+        const fullPath = resolvePath((opfDir ? opfDir + '/' : '') + 'package.opf', href);
+        if (fontPaths.has(fullPath)) item.parentNode.removeChild(item);
       }
     }
 
@@ -3660,6 +3739,13 @@ function fixOPF(opfText, opfOriginal, opfDir, splitImages = {}) {
     t = t.replace(/(<(?:\w+:)?item\b[^>]*href="[^"]+\.jpg"[^>]*)media-type="image\/(png|gif|webp|bmp)"/g, '$1media-type="image/jpeg"');
     t = t.replace(/(<(?:\w+:)?item\b[^>]*)media-type="image\/(png|gif|webp|bmp)"([^>]*href="[^"]+\.jpg")/g, '$1media-type="image/jpeg"$3');
     t = t.replace(/\s+svg(?=["'\s>])/g, '');
+    if (fontPaths && fontPaths.size) {
+      for (const path of fontPaths) {
+        const href = opfDir && path.startsWith(opfDir + '/') ? path.substring(opfDir.length + 1) : path;
+        const itemRegex = new RegExp(`<(?:\\w+:)?item\\b[^>]*href=["']${escapeRegex(href)}["'][^>]*\\/?>\\s*`, 'gi');
+        t = t.replace(itemRegex, '');
+      }
+    }
     for (const [splitKey, splitInfo] of Object.entries(splitImages)) {
       const parts = splitInfo.parts || splitInfo;
       let origHref = opfDir && splitKey.startsWith(opfDir + '/') ? splitKey.substring(opfDir.length + 1) : splitKey;
@@ -4259,6 +4345,10 @@ async function processImage(data, imageState = 0, imagePath = '') {
   });
 }
 
+function getConvertedImageOutputPath(path, processingError) {
+  return processingError ? path : path.replace(/\.[^.]+$/, '.jpg');
+}
+
 // Convert EPUB file - returns converted blob
 async function convertEpubFile(file, progressCallback) {
   const startTime = Date.now();
@@ -4274,12 +4364,6 @@ async function convertEpubFile(file, progressCallback) {
 
   const zip = await JSZip.loadAsync(file);
   const renamed = {};
-  zip.forEach(p => {
-    const l = p.toLowerCase();
-    if (l.match(/\.(png|gif|webp|bmp|jpeg)$/)) {
-      renamed[p] = p.replace(/\.(png|gif|webp|bmp|jpeg)$/i, '.jpg');
-    }
-  });
 
   const out = new JSZip();
   const entries = Object.entries(zip.files);
@@ -4352,7 +4436,11 @@ async function convertEpubFile(file, progressCallback) {
       totalNewSize += meta.finalSize;
 
       if (parts.length === 1 && parts[0].suffix === '') {
-        const newPath = renamed[path] || path.replace(/\.[^.]+$/, newExt);
+        // A failed browser conversion returns the original bytes. Preserve its
+        // extension and all EPUB references so the firmware does not select a
+        // JPEG decoder for PNG/GIF/WebP/BMP data renamed to .jpg.
+        const newPath = getConvertedImageOutputPath(path, meta.processingError === true);
+        if (!meta.processingError && newPath !== path) renamed[path] = newPath;
         out.file(newPath, parts[0].data, { compression: 'STORE', createFolders: false });
       } else {
         // Store with full path for collision prevention, but also keep original filename
@@ -4388,6 +4476,13 @@ async function convertEpubFile(file, progressCallback) {
 
     if (progressCallback) progressCallback((i / entries.length) * 60);
   }
+
+  // Second pass: update XHTML using DOMParser
+  const stripEmbeddedFonts = document.getElementById('stripEmbeddedFonts')?.checked === true;
+  const fontPaths = stripEmbeddedFonts ? collectFontPaths(zip, opfContent, opfPath) : new Set();
+  let removedFontCount = 0;
+  let removedFontBytes = 0;
+  let removedFontFaceRules = 0;
 
   // Second pass: update XHTML using DOMParser
   for (const [xhtmlPath, content] of Object.entries(xhtmlFiles)) {
@@ -4538,6 +4633,16 @@ async function convertEpubFile(file, progressCallback) {
       console.warn('DOMParser error for', xhtmlPath, e.message);
     }
 
+    if (stripEmbeddedFonts) {
+      t = t.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi, (match, open, css, close) => {
+        const stripped = stripFontFaceRules(css);
+        if (!stripped.count) return match;
+        removedFontFaceRules += stripped.count;
+        removedFontBytes += new TextEncoder().encode(css).length - new TextEncoder().encode(stripped.css).length;
+        return open + stripped.css + close;
+      });
+    }
+
     // Inject universal image constraint — prevents overflow on e-ink displays
     if (t.includes('</head>')) {
       t = t.replace('</head>', DEFENSIVE_STYLE + '</head>');
@@ -4558,7 +4663,7 @@ async function convertEpubFile(file, progressCallback) {
       t = t.split(o.split('/').pop()).join(n.split('/').pop());
     }
     const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/')) : '';
-    t = fixOPF(t, opfContent, opfDir, splitImages);
+    t = fixOPF(t, opfContent, opfDir, splitImages, fontPaths);
     if (t !== opfContent) logFix('OPF', 'manifest updated');
     out.file(opfPath, t, { compression: 'DEFLATE', compressionOptions: { level: 8 }, createFolders: false });
   }
@@ -4570,13 +4675,34 @@ async function convertEpubFile(file, progressCallback) {
     const low = path.toLowerCase();
     if (low.match(/\.(png|gif|webp|bmp|jpg|jpeg)$/) || low.match(/\.(xhtml|html|htm)$/) || low.endsWith('.opf')) continue;
 
+    if (fontPaths.has(path)) {
+      const fontData = await fileObj.async('arraybuffer');
+      removedFontCount++;
+      removedFontBytes += fontData.byteLength;
+      continue;
+    }
+
     let data = await fileObj.async('arraybuffer');
     if (low.endsWith('.css')) {
       let t = await safeReadText(fileObj);
       for (const [o, n] of Object.entries(renamed)) {
         t = t.split(o.split('/').pop()).join(n.split('/').pop());
       }
+      if (stripEmbeddedFonts) {
+        const stripped = stripFontFaceRules(t);
+        removedFontFaceRules += stripped.count;
+        removedFontBytes += new TextEncoder().encode(t).length - new TextEncoder().encode(stripped.css).length;
+        t = stripped.css;
+      }
       data = new TextEncoder().encode(t);
+    } else if (path === 'META-INF/encryption.xml' && fontPaths.size) {
+      const encryptionXml = await safeReadText(fileObj);
+      const stripped = stripFontEncryptionEntries(encryptionXml, fontPaths);
+      if (stripped.dropFile) {
+        removedFontBytes += data.byteLength;
+        continue;
+      }
+      if (stripped.modified) data = new TextEncoder().encode(stripped.xml);
     } else if (low.endsWith('.ncx')) {
       let t = await safeReadText(fileObj);
       for (const [o, n] of Object.entries(renamed)) {
@@ -4588,6 +4714,10 @@ async function convertEpubFile(file, progressCallback) {
       data = new TextEncoder().encode(t);
     }
     out.file(path, data, { compression: 'DEFLATE', compressionOptions: { level: 8 }, createFolders: false });
+  }
+
+  if (removedFontCount || removedFontFaceRules) {
+    log(`Removed ${removedFontCount} embedded font(s), ${removedFontFaceRules} @font-face rule(s), ${formatBytes(removedFontBytes)}`, '', 'INFO');
   }
 
   if (progressCallback) progressCallback(100);

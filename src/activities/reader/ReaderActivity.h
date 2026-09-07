@@ -15,6 +15,8 @@ class ReaderActivity final : public Activity {
     bool enabled = false;
     int spineIndex = 0;
     uint32_t page = 0;
+    bool hasVisibleTextOffset = false;
+    uint32_t visibleTextOffset = 0;
   };
 
  private:

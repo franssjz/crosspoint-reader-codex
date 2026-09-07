@@ -358,10 +358,12 @@
     }
 
     if (setting.type === 'string') {
-      const inputType = setting.name.toLowerCase().includes('password') ? 'password' : 'text';
+      const isPassword = setting.key === 'koPassword' || setting.name.toLowerCase().includes('password');
+      const inputType = isPassword ? 'password' : 'text';
       const val = setting.value || '';
+      const placeholder = isPassword && setting.configured ? ' placeholder="(unchanged)"' : '';
       return '<input type="' + inputType + '" id="' + id + '" value="' + escapeHtml(val) + '"' +
-        ' oninput="markChanged()">';
+        placeholder + ' oninput="markChanged()">';
     }
 
     return '';
@@ -471,9 +473,21 @@
         throw new Error(text || 'Save failed');
       }
 
-      // Update original values to new values
+      // Passwords remain write-only: clear replacements from the DOM once
+      // accepted and retain only a boolean configured hint.
       for (const key in changes) {
-        originalValues[key] = changes[key];
+        if (key === 'koPassword') {
+          const passwordInput = document.getElementById('setting-' + key);
+          if (passwordInput) {
+            passwordInput.value = '';
+            passwordInput.placeholder = '(unchanged)';
+          }
+          originalValues[key] = '';
+          const setting = allSettings.find(function(s) { return s.key === key; });
+          if (setting) setting.configured = true;
+        } else {
+          originalValues[key] = changes[key];
+        }
       }
 
       showMessage('Settings saved successfully!', false);

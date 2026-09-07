@@ -14,7 +14,8 @@ class SdCardFontSystem {
   SdCardFontSystem() = default;
   SdCardFontSystem(const SdCardFontSystem&) = delete;
   SdCardFontSystem& operator=(const SdCardFontSystem&) = delete;
-  /// Discover SD card fonts and load user's saved selection. Call once during setup.
+  /// Register the resolver and load a saved SD font selection. Discovery stays
+  /// deferred while the built-in font is selected.
   void begin(GfxRenderer& renderer);
 
   /// Ensure the correct SD font family is loaded for the current settings.
@@ -43,17 +44,14 @@ class SdCardFontSystem {
   /// If the registry is dirty, re-scan the SD card now and clear the flag.
   /// Used by the web UI so uploaded/deleted fonts appear in the list
   /// without waiting for the reader activity to run ensureLoaded().
-  void refreshIfDirty() {
-    const bool registryWasDirty = registryDirty_.exchange(false, std::memory_order_acquire);
-    const bool registryWasReleased = registryReleasedForNetwork_.exchange(false, std::memory_order_acquire);
-    if (registryWasDirty || registryWasReleased) {
-      registry_.discover();
-    }
-  }
+  void refreshIfDirty();
 
  private:
+  bool refreshRegistryIfNeeded(bool* wasDirty = nullptr, bool* wasReleased = nullptr);
+  void setupUiFallbacks(GfxRenderer& renderer);
   SdCardFontRegistry registry_;
   SdCardFontManager manager_;
   std::atomic<bool> registryDirty_{false};
   std::atomic<bool> registryReleasedForNetwork_{false};
+  std::atomic<bool> registryLoaded_{false};
 };

@@ -32,11 +32,13 @@ Some of the main additions include:
 - StarDict dictionary support from the SD card, with selectable monolingual and translation dictionaries, per-language folders, reader word lookup, suggestions, and lookup history
 - offline Flashcards with CSV decks, multiple study modes, recents, stats, and session summaries
 - unified EPUB Highlights for selected text and saved pages, with a global Highlights app and backward-compatible bookmark storage
+- repagination-resistant EPUB page marks and highlights, stored with visible-text anchors in BookmarkStore v5 while retaining v1-v4 migration
+- highlight matching that survives layout-inserted hyphens, split ellipses, and non-breaking-space fragments without confusing authored hyphens
 - customizable Home and Apps shortcuts, reader quick settings, reading layouts, themes, and Lyra Carousel workflow improvements
 - enhanced sleep tools, including custom image directories, cover/custom stats screens, sleep previews, cached sleep frames, and configurable clean sleep refresh
 - downloadable and manually installable SD-card fonts, including vCodex families such as `ChareInk` and `Lexend`
 - improved EPUB image handling for packed low-depth PNGs, scaled images and SVG image references, with low-memory band rendering and decode placeholders
-- native EPUB ruby annotations for Chinese/Japanese reading aids, plus next-book suggestions when a book is completed
+- native EPUB ruby annotations for Chinese/Japanese reading aids, improved CJK line breaking, and SD-font CJK fallback for book lists and chapter titles
 - Screen Clean, SD firmware update, Auto Flash, reading stats editor, and other maintenance/workflow utilities
 - named KOReader Sync profiles with optional metadata, ask/smart synchronization behavior and per-profile account registration
 - OPDS filename options, reader refresh controls, Bionic Reading, text darkness, dark mode, and other reader quality-of-life settings
@@ -49,22 +51,36 @@ The philosophy of this fork is simple: keep the firmware fast, stable, and focus
 | Item | Value |
 |---|---|
 | Project | `CPR-vCodex` |
-| Device | `Xteink X4`; `Xteink X3` compatibility reported by users, not personally tested |
-| Current release (CPR-vCodex) build | [`1.5.0.5-cpr-vcodex`](https://github.com/franssjz/cpr-vcodex/releases/tag/1.5.0.5-cpr-vcodex) |
+| Device | `Xteink X4` (personally tested); `Xteink X3` UC8253/UC8279d runtime support, with broader physical feedback requested |
+| Current release (CPR-vCodex) build | [`1.5.0.24-cpr-vcodex`](https://github.com/franssjz/cpr-vcodex/releases/tag/1.5.0.24-cpr-vcodex) |
+| Release hardware stack | `freeink-sdk` [`a485dc46`](https://github.com/Free-Ink/freeink-sdk/commit/a485dc46ef5fb2283e4bdb674002ddbef97a9268), with runtime X3/X4 and X3 UC8253/UC8279d detection. |
 | Latest SD font package | [`sd-fonts-m1-b4`](https://github.com/franssjz/cpr-vcodex/releases/tag/sd-fonts-m1-b4) |
 | Changelog | [CHANGELOG.md](./CHANGELOG.md) |
-| Current release sync | Selected CrossPoint Reader 1.5 EPUB indexing and memory work through [`f0a50557`](https://github.com/crosspoint-reader/crosspoint-reader/commit/f0a50557), manually adapted to retain the vCodex band renderer, KOReader profiles, reading statistics, highlights, themes, ruby, and SD-card fonts; `open-x4-sdk` remains at [`198ad26`](https://github.com/crosspoint-reader/community-sdk/commit/198ad267219c25c8ab84418b806c66f1fb5216a3). |
-| Current release focus | Restores the exact saved EPUB page when reopening during progressive indexing. |
-| Latest release notes | - Fixes EPUBs reopening several pages behind while the progressive page-count estimate converges.<br>- Keeps exact saved pages stable when indexing completes.<br>- Retains relative position remapping when font, orientation, or viewport changes genuinely repaginate a chapter. |
+| Current release sync | Selected CrossPoint Reader 1.5 changes reviewed through `master` [`95a847c7`](https://github.com/crosspoint-reader/crosspoint-reader/commit/95a847c7210a5060cf0bb5a20fbc855869d735f2) and `develop` [`93d572fc`](https://github.com/crosspoint-reader/crosspoint-reader/commit/93d572fc), plus targeted CrossInk improvements, manually adapted to retain the vCodex band renderer, KOReader profiles, reading statistics, highlights, themes, ruby, Lyra, and SD-card fonts. Release `1.5.0.22` additionally adopts CrossPoint's pinned `freeink-sdk` hardware layer and the isolated SD recovery entry from [`5717374e`](https://github.com/crosspoint-reader/crosspoint-reader/commit/5717374e4be88b3d30f45626bf796ceb3687c836). |
+| Current release focus | Supports original and newer X3 panels through runtime detection, modernizes the X3/X4 hardware layer, and provides a deterministic SD recovery path for USB-locked devices. |
+| Latest release notes | - One firmware selects X4, X3 UC8253, or X3 UC8279d hardware at boot.<br>- Battery, USB wake, GPIO wake, and deep sleep use runtime board profiles while preserving X4's battery latch and X3's RTC/fuel gauge.<br>- Holding `UP + POWER` at wake enters the SD firmware picker directly; the blind-recovery sequence is documented in `USER_GUIDE.md`. |
 | Base firmware line | `CrossPoint Reader 1.5.0` |
-| Latest official commit reviewed | [`f0a50557`](https://github.com/crosspoint-reader/crosspoint-reader/commit/f0a50557) |
-| Latest official commit incorporated | Selected EPUB/rendering, cache, Wi-Fi, web, media, completion, KOReader Sync, ruby, and progressive-indexing changes from [`67936cb3`](https://github.com/crosspoint-reader/crosspoint-reader/commit/67936cb3) through [`f0a50557`](https://github.com/crosspoint-reader/crosspoint-reader/commit/f0a50557); larger upstream settings, UI, persistence, touch, RTL, OTA, and hardware rewrites remain intentionally deferred. |
+| Latest official commit reviewed | `master` through [`95a847c7`](https://github.com/crosspoint-reader/crosspoint-reader/commit/95a847c7210a5060cf0bb5a20fbc855869d735f2) and `develop` through [`93d572fc`](https://github.com/crosspoint-reader/crosspoint-reader/commit/93d572fc) |
+| Latest official commit incorporated | Release `1.5.0.22` retains the selected CrossPoint Reader changes incorporated through `1.5.0.21`, migrates the hardware layer to CrossPoint's pinned `freeink-sdk`, and restores the isolated SD recovery entry; FUI, settings-persistence, touch, and RTL rewrites remain intentionally deferred. |
 | Intentional upstream exclusions | Unsupported upstream theme variants such as `RoundedRaff` remain out of the supported vCodex theme list; other upstream UI/config changes are adapted selectively to preserve the existing X4 workflow. |
+
+## Froze in Update Complete (Soft Bricked?) — X3 recovery
+
+Some USB-locked Xteink X3 units with the newer UC8279d display controller appeared to remain frozen on the previous or `Update Complete` screen after installing older CPR-vCodex releases. The device was not actually bricked: the firmware continued running, but the unsupported display controller prevented the screen from refreshing.
+
+Affected users have successfully recovered devices running CPR-vCodex `1.5.0.3` and `1.5.0.9` by blindly opening the SD firmware updater and installing `1.5.0.22`, which detects both the original UC8253 and newer UC8279d X3 panels at boot.
+
+> [!IMPORTANT]
+> This emergency procedure is intended for an X3 whose display is already frozen on an older CPR-vCodex release. Do not use the blind sequence for a normally working device; use the visible `Settings > System > SD Card Firmware Update` flow instead. Back up the card first or use a separate clean FAT32 recovery card, and do not interrupt the device or remove the microSD while firmware validation or flashing is in progress.
+
+- [XTEINK X3 — vCodex Unfreeze procedure (PDF)](https://github.com/user-attachments/files/31417306/XTEINK.X3.-.vCodex.Unfreeze.procedure.pdf) consolidates the physical-button sequence, required waits, SD-card preparation, and final confirmation used for the successful recoveries.
+- [Froze in Update Complete (Soft Bricked?) — issue #193](https://github.com/franssjz/cpr-vcodex/issues/193) contains the complete investigation and the step-by-step discussion with affected users, including their questions, screenshots, clarifications, and successful recovery reports.
 
 ## Web tools
 
-- [Auto Flash](https://franssjz.github.io/cpr-vcodex/flash.html) installs the latest CPR-vCodex firmware from Chrome or Edge using Web Serial.
+- [Auto Flash](https://franssjz.github.io/cpr-vcodex/flash.html) installs the latest CPR-vCodex firmware on ESP32-C3 Xteink X3 and X4 devices from Chrome or Edge using Web Serial. X4 Pro is a distinct ESP32-S3 device and is not currently supported; the flasher recognizes its partition table and stops before writing.
 - [Reading Stats Editor](https://franssjz.github.io/cpr-vcodex/reading-stats-editor/) edits exported reading stats locally in the browser. No upload, no server.
+- Device web settings treat the KOReader password as write-only: the stored value is never returned to the browser, which only indicates that a password is already configured.
 
 ## SD card DICTIONARIES
 
@@ -90,6 +106,8 @@ SD:/
 ```
 
 Each language or dictionary group lives in `dictionaries/<language>/`. The directory name is the visible language/group label, so names such as `spanish`, `english`, `english-spanish`, or `en-es` are all valid. Each directory may contain one or more dictionaries.
+
+The root folder is resolved case-insensitively, so `/Dictionaries`, `/DICTIONARIES`, and `/dictionaries` all work; CPR-vCodex keeps using the exact capitalization already present on the card.
 
 For every StarDict dictionary, the required files are:
 
@@ -128,7 +146,13 @@ If you know reliable public dictionary links for more languages, please contact 
 
 `CPR-vCodex` supports extra `.cpfont` families stored on the microSD card. The built-in reader fonts still work as usual, and downloaded SD fonts such as Lexend appear in `Settings > Reader > Font Family` after the firmware discovers them.
 
+Font discovery is lazy while the built-in font is selected, and the active SD font plus its catalog are released before Wi-Fi startup to leave more contiguous RAM for the radio. Both `/.fonts` and `/fonts` are resolved case-insensitively, including installs and deletion.
+
 SD-card font rendering keeps a fast per-glyph advance cache when it is complete, and falls back to direct glyph measurement when an external font cache is missing an entry. Browser File Transfer downloads also preserve the advertised response size so downloaded files do not fail with content-length mismatch errors.
+
+CJK-capable families can also provide 8, 10, and 12 pt files. CPR-vCodex uses those as size-matched fallbacks for Chinese, Japanese, and Korean text in the File Browser, Recent Books, and EPUB chapter list, and preloads each visible screen in one SD pass to avoid per-glyph reads.
+
+The File Transfer EPUB optimizer includes an optional `Remove embedded fonts` advanced setting. It is off by default so the optimized book remains portable to readers that honor publisher fonts; enabling it removes font files, matching OPF/encryption entries, and `@font-face` rules because CPR-vCodex renders with its selected built-in or SD-card font.
 
 Device download:
 
@@ -472,7 +496,11 @@ Supported flow:
 
 Existing `bookmarks.bin` files remain readable. They are upgraded in place only when
 the user next changes the book's Highlights, and all old bookmarks become page-mark
-entries rather than being discarded.
+entries rather than being discarded. Format v5 adds a visible Unicode-codepoint anchor
+to new page marks and text highlights, so reopening them remains tied to the same content
+after changing font size, margins, line spacing, or orientation.
+
+Highlights also recognize words split by a layout-inserted hyphen and adjacent ellipsis/NBSP fragments after reflow. A hyphen authored in the EPUB remains part of the text and is never silently discarded by matching.
 
 The text-selection and on-page highlighting behavior is adapted from
 [CrossInk](https://github.com/uxjulia/CrossInk) by
@@ -522,6 +550,7 @@ It supports:
 - preview
 - sequential vs shuffle order
 - persistent selected directory
+- case-insensitive default folders such as `/Sleep`, `/sleep`, and `/.Sleep`
 - cached sleep framebuffers
 - reduced repetition through recent-wallpaper tracking
 - `Reading Dashboard` sleep mode with daily goal, streak, reading totals, and achievement progress
@@ -539,7 +568,7 @@ Useful reader/display additions include:
 | Display | `UI Theme`, sleep-screen controls, `Dark Mode (Experimental)`, `Sunlight Fading Fix` |
 | Controls | `Side Button Layout`, `Long-press button behavior`, `Short Power Button Click`, `Tilt Page Turn` |
 | Status bar | EPUB/status-bar fields, battery visibility, `XTC Status Bar` |
-| System | `SD Card Firmware Update`, OTA update check, cache clearing, language, OPDS servers |
+| System | `Hide File Extension`, `SD Card Firmware Update`, OTA update check, cache clearing, language, OPDS servers |
 | Date | `Display Day`, `Date Format`, `Time Zone`, `Sync Day` reminder behavior |
 | Reading stats | `Daily Goal`, `Show after reading`, `Reset Reading Stats`, `Export Reading Stats`, `Import Reading Stats` |
 | Achievements | `Enable achievements`, `Achievement popups`, `Reset achievements`, `Sync with prev. stats` |
@@ -591,7 +620,7 @@ Important artifacts include:
 
 ### Recovering Reading Stats after 1.5.0.1 or 1.5.0.2
 
-Update to `1.5.0.5-cpr-vcodex` before resetting or deleting any data. In most cases the existing `/.crosspoint/reading_stats.json` will load automatically after the update because the affected releases rejected the file without overwriting it.
+Update to `1.5.0.24-cpr-vcodex` before resetting or deleting any data. In most cases the existing `/.crosspoint/reading_stats.json` will load automatically after the update because the affected releases rejected the file without overwriting it.
 
 If the displayed totals are still incomplete or incorrect, open `Settings > Apps > Reading Stats > Import Reading Stats` and select the newest suitable dated backup under `/exports/stats_backup_YYYY-MM-DD`. Those weekly backups appear directly in the import list and do not need to be renamed. If the only copy is on a computer, place it on the SD card as exactly `/exports/stats_exported` (without a `.json` extension), then import it. Try older dated backups newest-first if necessary, and preserve a copy of the SD card before cleaning or resetting statistics.
 
@@ -604,7 +633,7 @@ Each packaged dev build now keeps the base firmware line and the local flash ide
 Practical values to look at:
 
 - base firmware line: `CrossPoint Reader 1.5.0`
-- current release build style: `1.5.0.5-cpr-vcodex`
+- current release build style: `1.5.0.24-cpr-vcodex`
 - packaged artifact style: `artifacts/<version>-cpr-vcodex.bin`
 
 The incremental `.bNNNN` suffix exists specifically to help distinguish newer flashes from older ones on real hardware.
@@ -674,10 +703,10 @@ Release publishing:
 - before tagging, run:
 
 ```powershell
-python scripts/pre_release_check.py --tag 1.5.0.5-cpr-vcodex
+python scripts/pre_release_check.py --tag 1.5.0.24-cpr-vcodex
 ```
 
-- push a stable tag named like `1.5.0.5-cpr-vcodex`
+- push a stable tag named like `1.5.0.24-cpr-vcodex`
 - the release workflow builds `gh_release`, validates that the packaged artifact
   name matches the tag, and attaches the flashable `<tag>.bin`, build metadata,
   and firmware-budget reports to the GitHub Release

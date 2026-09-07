@@ -10,7 +10,9 @@
 #include "FsHelpers.h"
 
 namespace {
-constexpr uint8_t BOOK_CACHE_VERSION = 8;  // v8: TOC/book titles stored NFC-composed
+// v9: OPF elements accept arbitrary namespace prefixes and ambiguous EPUB 2
+// guide type="text" entries no longer override the real reading start.
+constexpr uint8_t BOOK_CACHE_VERSION = 9;
 constexpr char bookBinFile[] = "/book.bin";
 constexpr char tmpSpineBinFile[] = "/spine.bin.tmp";
 constexpr char tmpTocBinFile[] = "/toc.bin.tmp";
@@ -398,9 +400,24 @@ bool BookMetadataCache::load() {
   serialization::readString(bookFile, coreMetadata.coverItemHref);
   serialization::readString(bookFile, coreMetadata.textReferenceHref);
 
+  cumulativeSizes.clear();
+  cumulativeSizes.reserve(spineCount);
+  for (uint16_t i = 0; i < spineCount; ++i) {
+    bookFile.seek(lutOffset + sizeof(uint32_t) * i);
+    uint32_t spineEntryPos = 0;
+    serialization::readPod(bookFile, spineEntryPos);
+    bookFile.seek(spineEntryPos);
+    cumulativeSizes.push_back(readSpineEntry(bookFile).cumulativeSize);
+  }
+
   loaded = true;
   LOG_DBG("BMC", "Loaded cache data: %d spine, %d TOC entries", spineCount, tocCount);
   return true;
+}
+
+uint32_t BookMetadataCache::getCumulativeSize(const int index) const {
+  if (index < 0 || index >= static_cast<int>(cumulativeSizes.size())) return 0;
+  return cumulativeSizes[index];
 }
 
 BookMetadataCache::SpineEntry BookMetadataCache::getSpineEntry(const int index) {

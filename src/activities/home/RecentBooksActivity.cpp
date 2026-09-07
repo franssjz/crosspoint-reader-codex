@@ -141,6 +141,23 @@ void RecentBooksActivity::render(RenderLock&&) {
   if (recentBooks.empty()) {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, tr(STR_NO_RECENT_BOOKS));
   } else {
+    const int pageItems = UITheme::getInstance().getNumberOfItemsPerPage(renderer, true, false, true, true);
+    const size_t first = (selectorIndex / pageItems) * pageItems;
+    const size_t count = std::min(recentBooks.size() - first, static_cast<size_t>(pageItems));
+    struct PrewarmCtx {
+      const std::vector<RecentBook>* books;
+      size_t first;
+      bool title;
+    };
+    const auto getter = [](const void* raw, uint32_t i) -> const char* {
+      const auto* context = static_cast<const PrewarmCtx*>(raw);
+      const auto& book = (*context->books)[context->first + i];
+      return context->title ? book.title.c_str() : book.author.c_str();
+    };
+    PrewarmCtx titleCtx{&recentBooks, first, true};
+    PrewarmCtx authorCtx{&recentBooks, first, false};
+    renderer.prewarmFallbackText(UI_12_FONT_ID, getter, &titleCtx, count);
+    renderer.prewarmFallbackText(UI_10_FONT_ID, getter, &authorCtx, count);
     GUI.drawList(
         renderer, Rect{0, contentTop, pageWidth, contentHeight}, recentBooks.size(), selectorIndex,
         [this](int index) { return recentBooks[index].title; }, [this](int index) { return recentBooks[index].author; },

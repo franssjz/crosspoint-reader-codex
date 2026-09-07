@@ -90,7 +90,8 @@ class ActivityManager {
   void goToBrowser();
   void goToReader(std::string path);
   void goToKOReaderSync();
-  void goToEpubBookmark(std::string path, int spineIndex, uint32_t page);
+  void goToEpubBookmark(std::string path, int spineIndex, uint32_t page, bool hasVisibleTextOffset = false,
+                        uint32_t visibleTextOffset = 0);
   void goToSleep();
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
@@ -106,6 +107,7 @@ class ActivityManager {
 
   bool preventAutoSleep() const;
   bool isReaderActivity() const;
+  bool handleForcedRefresh();
   bool skipLoopDelay() const;
   ScreenshotInfo getScreenshotInfo() const;
 

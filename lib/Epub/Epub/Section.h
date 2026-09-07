@@ -30,6 +30,7 @@ class Section {
     uint32_t xhtmlByteOffset;
     uint16_t paragraphIndex;
     uint16_t listItemIndex;
+    uint32_t visibleTextOffset;
   };
   // Held only while an incremental build is in progress (see startBuild). Carries the
   // live parser plus the strings it references (the parser stores them by reference)
@@ -151,4 +152,9 @@ class Section {
 
   // XHTML byte boundary retained for KOReader's position mapper.
   std::optional<uint32_t> getXhtmlByteOffsetForPage(uint16_t page) const;
+
+  // Stable source position used by bookmarks so repagination does not move them.
+  std::optional<uint32_t> getVisibleTextOffsetForPage(uint16_t page) const;
+  std::optional<uint16_t> getPageForVisibleTextOffset(uint32_t offset, bool preferFirstAtOffset = false) const;
+  bool buildReachedVisibleTextOffset(uint32_t offset) const;
 };

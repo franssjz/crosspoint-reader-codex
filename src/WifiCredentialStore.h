@@ -1,4 +1,6 @@
 #pragma once
+#include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -24,12 +26,18 @@ class WifiCredentialStore {
   static WifiCredentialStore instance;
   std::vector<WifiCredential> credentials;
   std::string lastConnectedSsid;
+  // Protect the in-memory strings without holding the lock during SD I/O.
+  mutable std::mutex credentialMutex;
+  // Serializes the atomic JSON temp-file workflow used by save/load.
+  mutable std::mutex persistenceMutex;
 
   static constexpr size_t MAX_NETWORKS = 8;
+  static constexpr size_t MAX_PASSWORD_LENGTH = 64;
 
   // Private constructor for singleton
   WifiCredentialStore() = default;
 
+  bool saveToFileUnlocked() const;
   bool loadFromBinaryFile();
 
   friend bool JsonSettingsIO::saveWifi(const WifiCredentialStore&, const char*);
@@ -50,17 +58,18 @@ class WifiCredentialStore {
   // Credential management
   bool addCredential(const std::string& ssid, const std::string& password);
   bool removeCredential(const std::string& ssid);
-  const WifiCredential* findCredential(const std::string& ssid) const;
+  std::optional<WifiCredential> findCredential(const std::string& ssid) const;
 
-  // Get all stored credentials (for UI display)
-  const std::vector<WifiCredential>& getCredentials() const { return credentials; }
+  // Check whether automatic connection has any saved network to try without
+  // exposing or copying credential contents outside the locked store.
+  bool hasCredentials() const;
 
   // Check if a network is saved
   bool hasSavedCredential(const std::string& ssid) const;
 
   // Last connected network
   void setLastConnectedSsid(const std::string& ssid);
-  const std::string& getLastConnectedSsid() const;
+  std::string getLastConnectedSsid() const;
   void clearLastConnectedSsid();
 
   // Clear all credentials

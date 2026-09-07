@@ -78,11 +78,20 @@ class WifiSelectionActivity final : public Activity {
   // Whether to attempt auto-connect on entry
   const bool allowAutoConnect;
 
+  // Whether to cancel instead of showing the network list when auto-connect
+  // cannot use a saved in-range network.
+  const bool autoConnectOnly;
+
   // Whether a successful connection should perform the one-time RTC sync hook.
   const bool syncRtcOnConnect;
 
   // Whether we are attempting to auto-connect
   bool autoConnecting = false;
+
+  // Whether auto-connect already ran for this activity entry. Auto-connect is a
+  // one-shot on entry; without this a rescan after a failed auto-connect would
+  // immediately retry the same network and trap the user in a loop.
+  bool autoConnectAttempted = false;
 
   // Save/forget prompt selection (0 = Yes, 1 = No)
   int savePromptSelection = 0;
@@ -101,6 +110,7 @@ class WifiSelectionActivity final : public Activity {
   void renderForgetPrompt() const;
 
   void startWifiScan();
+  void returnToNetworkList();
   void processWifiScanResults();
   void appendHiddenNetworkEntry();
   void selectNetwork(int index);
@@ -116,9 +126,10 @@ class WifiSelectionActivity final : public Activity {
 
  public:
   explicit WifiSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool autoConnect = false,
-                                 bool syncRtcOnConnect = true)
+                                 bool syncRtcOnConnect = true, bool autoConnectOnly = false)
       : Activity("WifiSelection", renderer, mappedInput),
         allowAutoConnect(autoConnect),
+        autoConnectOnly(autoConnectOnly),
         syncRtcOnConnect(syncRtcOnConnect) {}
   void onEnter() override;
   void onExit() override;

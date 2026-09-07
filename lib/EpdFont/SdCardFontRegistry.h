@@ -33,12 +33,12 @@ class SdCardFontRegistry {
   // Returns the existing root for `familyName` (the one that contains
   // /<root>/<familyName>/), or nullptr if the family is not installed in
   // either root. Used by writers to keep re-installs in their existing dir.
-  static const char* findFamilyRoot(const char* familyName);
+  static bool findFamilyRoot(const char* familyName, char* rootPath, size_t rootPathSize);
 
   // Returns the root path that should be used when creating a brand-new
   // family on disk (no prior install): the existing root if exactly one of
   // the two roots exists, otherwise the hidden root.
-  static const char* defaultWriteRoot();
+  static void defaultWriteRoot(char* rootPath, size_t rootPathSize);
 
   // Scan SD card, populate families_. Returns true if any families found.
   bool discover();

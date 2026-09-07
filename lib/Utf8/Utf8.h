@@ -41,6 +41,19 @@ inline bool utf8IsCjkBreakable(const uint32_t cp) {
          || (cp >= 0x2A700 && cp <= 0x2B73F);  // CJK Extension C
 }
 
+// Broader than utf8IsCjkBreakable: this is used only to select a CJK-capable
+// UI fallback, not to create line-break opportunities.
+inline bool utf8IsCjkCodepoint(const uint32_t cp) {
+  return (cp >= 0x1100 && cp <= 0x11FF) || (cp >= 0x2E80 && cp <= 0x2FDF) ||
+         (cp >= 0x3000 && cp <= 0x33FF) || (cp >= 0x3400 && cp <= 0x4DBF) ||
+         (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0xA960 && cp <= 0xA97F) ||
+         (cp >= 0xAC00 && cp <= 0xD7FF) || (cp >= 0xF900 && cp <= 0xFAFF) ||
+         (cp >= 0xFE10 && cp <= 0xFE1F) || (cp >= 0xFE30 && cp <= 0xFE4F) ||
+         (cp >= 0xFF01 && cp <= 0xFF60) || (cp >= 0xFF65 && cp <= 0xFFEF) ||
+         (cp >= 0x20000 && cp <= 0x2EBEF) || (cp >= 0x2F800 && cp <= 0x2FA1F) ||
+         (cp >= 0x30000 && cp <= 0x323AF);
+}
+
 // Returns true for Unicode combining diacritical marks that should not advance the cursor.
 inline bool utf8IsCombiningMark(const uint32_t cp) {
   return (cp >= 0x0300 && cp <= 0x036F)      // Combining Diacritical Marks

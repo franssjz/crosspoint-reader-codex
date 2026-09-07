@@ -22,12 +22,13 @@ void EpubReaderPercentSelectionActivity::onEnter() {
 void EpubReaderPercentSelectionActivity::onExit() { Activity::onExit(); }
 
 void EpubReaderPercentSelectionActivity::adjustPercent(const int delta) {
-  // Apply delta and clamp within 0-100.
-  percent += delta;
-  if (percent < 0) {
-    percent = 0;
-  } else if (percent > 100) {
+  // Wrap using a 100-value ring, while preserving 100 as the natural landing
+  // value when reached exactly (adapted from upstream b85580aa).
+  const int raw = percent + delta;
+  if (raw > 0 && raw % 100 == 0) {
     percent = 100;
+  } else {
+    percent = ((raw % 100) + 100) % 100;
   }
   requestUpdate();
 }

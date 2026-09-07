@@ -1,12 +1,13 @@
 #pragma once
 
+#include <ArduinoJson.h>
+
 #include <cstdint>
 #include <string>
 #include <vector>
 
-#include <ArduinoJson.h>
-
 #include "CrossPointSettings.h"
+#include "ReadingSessionLog.h"
 
 inline uint64_t getDailyReadingGoalMs() { return SETTINGS.getDailyGoalMs(); }
 
@@ -45,13 +46,6 @@ struct ReadingSessionSnapshot {
   bool completedThisSession = false;
   uint8_t startProgressPercent = 0;
   uint8_t endProgressPercent = 0;
-};
-
-struct ReadingSessionLogEntry {
-  uint32_t dayOrdinal = 0;
-  uint32_t sessionMs = 0;
-  std::string bookId;
-  std::string path;
 };
 
 class ReadingStatsStore;

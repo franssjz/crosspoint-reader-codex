@@ -70,11 +70,12 @@ void drawDecorationLine(const GfxRenderer& renderer, const int startX, const int
 }
 }  // namespace
 
-size_t TextBlock::arenaSize(const uint16_t wc, const bool hasFocus, const bool hasRuby, const uint16_t baseBytes,
-                            const uint16_t rubyBytes) {
+size_t TextBlock::arenaSize(const uint16_t wc, const bool hasFocus, const bool hasRuby, const bool hasLayoutFlags,
+                            const uint16_t baseBytes, const uint16_t rubyBytes) {
   size_t size = static_cast<size_t>(wc) * (sizeof(uint16_t) + sizeof(int16_t) + sizeof(uint8_t));
   if (hasRuby) size += static_cast<size_t>(wc) * sizeof(uint16_t);
   if (hasFocus) size += static_cast<size_t>(wc) * (sizeof(uint16_t) + sizeof(uint8_t));
+  if (hasLayoutFlags) size += static_cast<size_t>(wc) * sizeof(uint8_t);
   return size + baseBytes + rubyBytes;
 }
 
@@ -100,6 +101,10 @@ void TextBlock::bindArenaPointers() {
     focusBoundaryArr = base + off;
     off += wc;
   }
+  if (layoutFlagsPresent) {
+    layoutFlagsArr = base + off;
+    off += wc;
+  }
   textArr = reinterpret_cast<const char*>(base + off);
   off += textBytes;
   rubyTextArr = rubyPresent ? reinterpret_cast<const char*>(base + off) : nullptr;
@@ -107,14 +112,18 @@ void TextBlock::bindArenaPointers() {
 
 TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& wordXpos,
                      const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
-                     const std::vector<uint16_t>& focusSuffixX, const BlockStyle& style,
+                     const std::vector<uint16_t>& focusSuffixX, const std::vector<uint8_t>& layoutFlags,
+                     const BlockStyle& style,
                      const std::vector<std::string>& rubyTexts)
     : blockStyle(style) {
   const bool hasFocus = !focusBoundary.empty();
   const bool hasRuby = std::any_of(rubyTexts.begin(), rubyTexts.end(), [](const std::string& s) { return !s.empty(); });
+  const bool hasLayoutFlags =
+      std::any_of(layoutFlags.begin(), layoutFlags.end(), [](const uint8_t flags) { return flags != 0; });
   if (words.size() != wordXpos.size() || words.size() != wordStyles.size() ||
       words.size() > MAX_SERIALIZED_LINE_WORDS ||
       (hasFocus && (words.size() != focusBoundary.size() || words.size() != focusSuffixX.size())) ||
+      (!layoutFlags.empty() && words.size() != layoutFlags.size()) ||
       (hasRuby && rubyTexts.size() != words.size())) {
     LOG_ERR("TXB", "Construction failed: inconsistent word arrays");
     isValid = false;
@@ -123,6 +132,7 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   numWords = static_cast<uint16_t>(words.size());
   focusPresent = hasFocus;
   rubyPresent = hasRuby;
+  layoutFlagsPresent = hasLayoutFlags;
   size_t baseTotal = 0;
   size_t rubyTotal = 0;
   for (const auto& word : words) baseTotal += word.size() + 1;
@@ -138,7 +148,7 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   textBytes = static_cast<uint16_t>(baseTotal);
   rubyTextBytes = static_cast<uint16_t>(rubyTotal);
   if (numWords == 0) return;
-  const size_t size = arenaSize(numWords, focusPresent, rubyPresent, textBytes, rubyTextBytes);
+  const size_t size = arenaSize(numWords, focusPresent, rubyPresent, layoutFlagsPresent, textBytes, rubyTextBytes);
   arena.reset(new (std::nothrow) uint8_t[size]);
   if (!arena) {
     LOG_ERR("TXB", "OOM: text arena %u bytes", static_cast<uint32_t>(size));
@@ -179,6 +189,10 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
       boundary[i] = focusBoundary[i];
     }
   }
+  if (layoutFlagsPresent) {
+    auto* flags = const_cast<uint8_t*>(layoutFlagsArr);
+    memcpy(flags, layoutFlags.data(), numWords);
+  }
 }
 
 void TextBlock::recordFontUsage(FontCacheManager& fontCacheManager, const int fontId,
@@ -207,12 +221,10 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
   const int ascender = renderer.getFontAscenderSize(fontId);
   const int rubyShift = getRubyShift(ascender);
   size_t rubyGroupEnd = 0;
-  int rubyGroupBaseShift = 0;
   for (uint16_t i = 0; i < numWords; i++) {
     int rubyX = 0;
     if (i >= rubyGroupEnd) {
       rubyGroupEnd = i;
-      rubyGroupBaseShift = 0;
       if (rubyText(i)[0] != '\0' && (wordStyle(i) & EpdFontFamily::RUBY_CONTINUE) == 0) {
         size_t count = 1;
         int baseWidth = renderer.getTextAdvanceX(fontId, wordText(i), wordStyle(i));
@@ -221,14 +233,13 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
           ++count;
         }
         const int rubyWidth = renderer.getTextAdvanceX(fontId, rubyText(i), EpdFontFamily::SUP);
-        rubyGroupBaseShift = std::max(0, rubyWidth - baseWidth) / 2;
         rubyGroupEnd = i + count;
-        rubyX = wordXpos(i) + x + (rubyWidth < baseWidth ? (baseWidth - rubyWidth) / 2 : 0);
+        rubyX = wordXpos(i) + x - (rubyWidth - baseWidth) / 2;
         rubyX = std::max(0, std::min(rubyX, renderer.getScreenWidth() - rubyWidth));
       }
     }
 
-    const int wordX = wordXpos(i) + x + rubyGroupBaseShift;
+    const int wordX = wordXpos(i) + x;
     const EpdFontFamily::Style currentStyle = wordStyle(i);
     const char* w = wordText(i);
     const size_t wLen = wordTextLen(i);
@@ -372,10 +383,11 @@ bool TextBlock::serialize(FsFile& file) const {
   serialization::writePod(file, numWords);
   serialization::writePod(file, static_cast<uint8_t>(focusPresent));
   serialization::writePod(file, static_cast<uint8_t>(rubyPresent));
+  serialization::writePod(file, static_cast<uint8_t>(layoutFlagsPresent));
   serialization::writePod(file, textBytes);
   serialization::writePod(file, rubyTextBytes);
   if (numWords > 0) {
-    const size_t size = arenaSize(numWords, focusPresent, rubyPresent, textBytes, rubyTextBytes);
+    const size_t size = arenaSize(numWords, focusPresent, rubyPresent, layoutFlagsPresent, textBytes, rubyTextBytes);
     if (file.write(arena.get(), size) != size) return false;
   }
 
@@ -400,11 +412,13 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
   uint16_t wc = 0;
   uint8_t hasFocus = 0;
   uint8_t hasRuby = 0;
+  uint8_t hasLayoutFlags = 0;
   uint16_t baseBytes = 0;
   uint16_t rubyBytes = 0;
   serialization::readPod(file, wc);
   serialization::readPod(file, hasFocus);
   serialization::readPod(file, hasRuby);
+  serialization::readPod(file, hasLayoutFlags);
   serialization::readPod(file, baseBytes);
   serialization::readPod(file, rubyBytes);
   if (wc > MAX_SERIALIZED_LINE_WORDS || (wc == 0 && (baseBytes != 0 || rubyBytes != 0)) || (wc > 0 && baseBytes < wc) ||
@@ -416,10 +430,12 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
   block->numWords = wc;
   block->focusPresent = hasFocus != 0;
   block->rubyPresent = hasRuby != 0;
+  block->layoutFlagsPresent = hasLayoutFlags != 0;
   block->textBytes = baseBytes;
   block->rubyTextBytes = rubyBytes;
   if (wc > 0) {
-    const size_t size = arenaSize(wc, block->focusPresent, block->rubyPresent, baseBytes, rubyBytes);
+    const size_t size =
+        arenaSize(wc, block->focusPresent, block->rubyPresent, block->layoutFlagsPresent, baseBytes, rubyBytes);
     block->arena.reset(new (std::nothrow) uint8_t[size]);
     if (!block->arena || file.read(block->arena.get(), size) != size) return nullptr;
     block->bindArenaPointers();

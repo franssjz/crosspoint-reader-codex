@@ -125,6 +125,8 @@ class PageTableFragment final : public PageElement {
 
 class Page {
  public:
+  // Source position is stored in the section LUT, not in the serialized page body.
+  uint32_t visibleTextOffset = 0;
   // the list of block index and line numbers on this page
   std::vector<std::shared_ptr<PageElement>> elements;
   std::vector<FootnoteEntry> footnotes;

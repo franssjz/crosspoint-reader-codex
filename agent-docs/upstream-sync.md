@@ -8,7 +8,7 @@ third-party forks, or resolving fork divergence.
 - `crosspoint-reader-master`: official upstream reference.
 - `cpr-vcodex`: this fork, focused on reading consistency and statistics.
 - `crosspet` and `papyrix`: third-party forks worth scanning for ideas.
-- `open-x4-sdk`: hardware SDK submodule/dependency area used by the firmware.
+- `freeink-sdk`: hardware SDK submodule/dependency area used by the firmware.
 
 ## Sync Strategy
 

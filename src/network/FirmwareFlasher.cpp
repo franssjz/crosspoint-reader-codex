@@ -46,6 +46,8 @@ const char* resultName(Result r) {
       return "BAD_CHECKSUM";
     case Result::BAD_SHA:
       return "BAD_SHA";
+    case Result::BAD_CHIP:
+      return "BAD_CHIP";
     case Result::BAD_SIZE:
       return "BAD_SIZE";
     case Result::NO_PARTITION:
@@ -62,6 +64,22 @@ const char* resultName(Result r) {
       return "OTADATA_FAIL";
   }
   return "?";
+}
+
+uint16_t runningPartitionChipId() {
+  // The running image is immutable, so pay the SPI flash read only once.
+  static const uint16_t cached = [] {
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    if (!running) return static_cast<uint16_t>(0xFFFF);
+
+    uint16_t chipId = 0xFFFF;
+    // chip_id is stored at offset 12 of esp_image_header_t.
+    if (esp_partition_read(running, 12, &chipId, sizeof(chipId)) != ESP_OK) {
+      return static_cast<uint16_t>(0xFFFF);
+    }
+    return chipId;
+  }();
+  return cached;
 }
 
 namespace {
@@ -116,6 +134,15 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
     LOG_ERR("FLASH", "validate: bad magic 0x%02X", header[0]);
     file.close();
     return Result::BAD_MAGIC;
+  }
+
+  uint16_t imageChip = 0xFFFF;
+  std::memcpy(&imageChip, header + 12, sizeof(imageChip));
+  const uint16_t deviceChip = runningPartitionChipId();
+  if (deviceChip != 0xFFFF && imageChip != deviceChip) {
+    LOG_ERR("FLASH", "validate: wrong chip: image=0x%04X device=0x%04X", imageChip, deviceChip);
+    file.close();
+    return Result::BAD_CHIP;
   }
   const uint8_t segCount = header[1];
   const bool hashAppended = header[23] != 0;

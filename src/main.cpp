@@ -33,6 +33,7 @@
 #include "UiFontSelection.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/BootRecovery.h"
@@ -255,10 +256,14 @@ void waitForPowerRelease() {
 void enterDeepSleep() {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
-  APP_STATE.saveToFile();
 
   deepSleepInProgress = true;
   activityManager.goToSleep();
+
+  // Persist only after the sleep screen has been rendered. Serializing state
+  // while a reader is still alive fragments the heap immediately before the
+  // large contiguous allocation required by PNGdec.
+  APP_STATE.saveToFile();
 
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     WiFi.disconnect(true);
@@ -315,6 +320,9 @@ void setup() {
   t1 = millis();
 
   HalSystem::begin();
+  // checkPanic() consumes the watchdog capture marker after a successful SD
+  // dump, so keep the boot classification for the later route decision.
+  const bool rebootedFromPanic = HalSystem::isRebootFromPanic();
 
   const bool isSilentReboot = (silentRebootMagic == SILENT_REBOOT_MAGIC);
   const uint32_t snapshotTarget =
@@ -412,6 +420,23 @@ void setup() {
       break;
   }
 
+  // Recovery firmware mode: hold the upper side button (BTN_UP) together with
+  // Power while waking to jump directly to the SD firmware picker. This is the
+  // only practical recovery route on USB-locked X3 devices, so sample the raw
+  // hardware button after InputManager's debounce state has settled.
+  bool recoveryFirmwareMode = false;
+  if (wakeupReason == HalGPIO::WakeupReason::PowerButton) {
+    const unsigned long settleStart = millis();
+    while (millis() - settleStart < 500) {
+      gpio.update();
+      delay(10);
+    }
+    if (gpio.isPressed(HalGPIO::BTN_UP)) {
+      recoveryFirmwareMode = true;
+      LOG_INF("MAIN", "Recovery firmware mode (UP + POWER held at boot)");
+    }
+  }
+
   // First serial output only here to avoid timing inconsistencies for power button press duration verification
   LOG_DBG("MAIN", "Starting CrossPoint version %s", CROSSPOINT_VERSION);
 
@@ -491,7 +516,12 @@ void setup() {
   const uint8_t syncDayReminderThreshold = SETTINGS.getEffectiveSyncDayReminderStartThreshold();
   BootRecovery::enterStage(BootRecovery::BootStage::RouteDecision);
 
-  if (HalSystem::isRebootFromPanic() && !forceHomeBoot) {
+  if (recoveryFirmwareMode) {
+    // Skip normal home/reader routing and keep recovery self-contained: Back
+    // cannot escape the firmware picker while recoveryMode is true.
+    activityManager.replaceActivity(
+        std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));
+  } else if (rebootedFromPanic && !forceHomeBoot) {
     // If we rebooted from a panic, go to crash report screen to show the panic info
     activityManager.goToCrashReport();
   } else if (isSilentReboot && snapshotTarget == SILENT_REBOOT_TARGET_READER && !APP_STATE.openEpubPath.empty()) {
@@ -618,8 +648,10 @@ void loop() {
   if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
       mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
     LOG_DBG("MAIN", "Manual screen refresh triggered");
-    RenderLock lock;
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    if (!activityManager.handleForcedRefresh()) {
+      RenderLock lock;
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    }
   }
 
   // Refresh the battery icon when USB is plugged or unplugged.

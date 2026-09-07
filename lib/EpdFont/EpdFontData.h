@@ -141,4 +141,8 @@ typedef struct {
   /// Context pointer for glyphMissHandler (typically SdCardFont*).  Also used by
   /// GfxRenderer::getGlyphBitmap() to retrieve overflow bitmaps via SdCardFont.
   void* glyphMissCtx;
+
+  /// Optional RAM-only coverage query for fonts whose active interval table is
+  /// only a resident subset (SD-card fonts). Shares glyphMissCtx.
+  bool (*coverageHandler)(void* ctx, uint32_t codepoint);
 } EpdFontData;

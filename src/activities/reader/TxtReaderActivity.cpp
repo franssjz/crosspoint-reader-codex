@@ -11,13 +11,13 @@
 #include <algorithm>
 #include <cctype>
 
+#include "AchievementsStore.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
-#include "AchievementsStore.h"
 #include "MappedInputManager.h"
 #include "ProgressFile.h"
-#include "ReadingStatsStore.h"
 #include "ReaderUtils.h"
+#include "ReadingStatsStore.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontGlobals.h"
 #include "activities/apps/ReadingStatsDetailActivity.h"
@@ -45,9 +45,9 @@ void exitReaderToHomeOrStats(GfxRenderer& renderer, MappedInputManager& mappedIn
   READING_STATS.endSession();
   ACHIEVEMENTS.recordSessionEnded(READING_STATS.getLastSessionSnapshot());
   showPendingAchievementPopups(renderer);
-  const bool countedSession =
-      READING_STATS.getLastSessionSnapshot().valid && READING_STATS.getLastSessionSnapshot().counted &&
-      READING_STATS.getLastSessionSnapshot().path == bookPath;
+  const bool countedSession = READING_STATS.getLastSessionSnapshot().valid &&
+                              READING_STATS.getLastSessionSnapshot().counted &&
+                              READING_STATS.getLastSessionSnapshot().path == bookPath;
 
   if (SETTINGS.showStatsAfterReading && countedSession && !bookPath.empty()) {
     activityManager.replaceActivity(
@@ -322,13 +322,13 @@ void TxtReaderActivity::onExit() {
   // Reset orientation back to portrait for the rest of the UI
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
-  pageOffsets.clear();
-  currentPageLines.clear();
   APP_STATE.readerActivityLoadCount = 0;
-  APP_STATE.saveToFile();
   READING_STATS.endSession();
   ACHIEVEMENTS.recordSessionEnded(READING_STATS.getLastSessionSnapshot());
   txt.reset();
+  decltype(pageOffsets)().swap(pageOffsets);
+  decltype(currentPageLines)().swap(currentPageLines);
+  APP_STATE.saveToFile();
 }
 
 void TxtReaderActivity::loop() {
@@ -377,20 +377,35 @@ void TxtReaderActivity::loop() {
     firstConfirmClickMs = 0UL;
   }
 
-  if (prevTriggered && currentPage > 0) {
-    READING_STATS.noteActivity();
-    currentPage--;
-    requestUpdate();
-  } else if (nextTriggered) {
-    if (currentPage < totalPages - 1) {
+  if (prevTriggered) {
+    if (skipPages(-1)) {
       READING_STATS.noteActivity();
-      currentPage++;
       requestUpdate();
-    } else {
+    }
+  } else if (nextTriggered) {
+    if (skipPages(1) && !isAtEndOfBook()) {
+      READING_STATS.noteActivity();
+      requestUpdate();
+    } else if (isAtEndOfBook()) {
+      READING_STATS.noteActivity();
       READING_STATS.updateProgress(100, true, "", 100);
       exitReaderAfterOptionalCompletedMove();
     }
   }
+}
+
+bool TxtReaderActivity::skipPages(const int amount) {
+  if (!initialized) return false;
+
+  int newPage = currentPage + amount;
+  if (newPage < 0) newPage = 0;
+  // totalPages is an intentional end-of-book sentinel. Keep it reachable so
+  // multi-page skips and ordinary forward turns share the same completion path.
+  if (newPage > totalPages) newPage = totalPages;
+  if (newPage == currentPage) return false;
+
+  currentPage = newPage;
+  return true;
 }
 
 void TxtReaderActivity::requestCurrentPageFullRefresh() {
@@ -574,9 +589,8 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<TextLine>& o
 
     // Extract line content for display (without CR/LF)
     const std::string sourceLine(reinterpret_cast<char*>(buffer + pos), displayLen);
-    TextLine lineInfo =
-        txt->isMarkdown() ? parseMarkdownLine(sourceLine, cachedParagraphAlignment)
-                          : makePlainTextLine(sourceLine, cachedParagraphAlignment);
+    TextLine lineInfo = txt->isMarkdown() ? parseMarkdownLine(sourceLine, cachedParagraphAlignment)
+                                          : makePlainTextLine(sourceLine, cachedParagraphAlignment);
     if (lineInfo.text.empty() && txt->isMarkdown() && trimMarkdownWhitespace(sourceLine).empty() &&
         static_cast<int>(outLines.size()) < linesPerPage) {
       outLines.push_back(std::move(lineInfo));
@@ -594,7 +608,8 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<TextLine>& o
       const auto lineStyle = static_cast<EpdFontFamily::Style>(lineInfo.style);
       const int indentPx = lineInfo.indent * renderer.getSpaceWidth(cachedFontId, lineStyle) * 2;
       const int lineViewportWidth = std::max(1, viewportWidth - indentPx);
-      int lineWidth = getTextLineWidth(renderer, cachedFontId, sliceTextLine(lineInfo, wrappedLineStart, line.length()));
+      int lineWidth =
+          getTextLineWidth(renderer, cachedFontId, sliceTextLine(lineInfo, wrappedLineStart, line.length()));
 
       if (lineWidth <= lineViewportWidth) {
         TextLine displayLine = sliceTextLine(lineInfo, wrappedLineStart, line.length());
@@ -813,8 +828,9 @@ void TxtReaderActivity::loadProgress() {
   bool loadedFromLegacy = false;
   const std::string stableProgressPath = getStableProgressPath(stableBookId);
   const std::string legacyProgressPath = getLegacyProgressPath(*txt);
-  const std::string progressPath =
-      (!stableProgressPath.empty() && Storage.exists(stableProgressPath.c_str())) ? stableProgressPath : legacyProgressPath;
+  const std::string progressPath = (!stableProgressPath.empty() && Storage.exists(stableProgressPath.c_str()))
+                                       ? stableProgressPath
+                                       : legacyProgressPath;
   if (progressPath == legacyProgressPath) {
     loadedFromLegacy = !stableProgressPath.empty() && Storage.exists(legacyProgressPath.c_str());
   }

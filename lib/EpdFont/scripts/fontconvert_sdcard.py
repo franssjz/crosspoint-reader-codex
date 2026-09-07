@@ -47,6 +47,7 @@ INTERVAL_PRESETS = {
     "armenian":    [(0x0530, 0x058F)],
     "ethiopic":    [(0x1200, 0x137F), (0x1380, 0x139F), (0x2D80, 0x2DDF)],
     "vietnamese":  [(0x01A0, 0x01B0), (0x1EA0, 0x1EF9)],
+    "ipa-chars":   [(0x0250, 0x02AF), (0x02B0, 0x02FF)],
     "punctuation": [(0x2000, 0x206F)],
     "cjk":         [(0x3000, 0x303F), (0x3040, 0x309F), (0x30A0, 0x30FF),
                     (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0xFF00, 0xFFEF)],
@@ -192,6 +193,54 @@ STANDARD_LIGATURE_MAP = {
     (0x17F, 0x74):      0xFB05,  # long-s + t
     (0x73, 0x74):       0xFB06,  # st
 }
+
+
+def extract_ligature_glyph_indices_fonttools(font_path):
+    """Map standard ligature codepoints without a cmap entry to glyph IDs.
+
+    Many fonts expose substitutions such as ``f_f`` only through GSUB. The
+    reader stores those substitutions as Unicode compatibility codepoints, so
+    rasterize the primary font's GSUB target instead of silently taking the
+    glyph from a fallback font. Adapted from upstream 9ec77671.
+    """
+    from fontTools.ttLib import TTFont
+
+    font = TTFont(font_path)
+    cmap = font.getBestCmap() or {}
+    glyph_to_cp = {glyph_name: code_point for code_point, glyph_name in cmap.items()}
+    glyph_indices = {glyph_name: index for index, glyph_name in enumerate(font.getGlyphOrder())}
+    overrides = {}
+
+    if 'GSUB' in font:
+        gsub = font['GSUB'].table
+        liga_lookup_indices = set()
+        if gsub.FeatureList:
+            for feature_record in gsub.FeatureList.FeatureRecord:
+                if feature_record.FeatureTag in ('liga', 'rlig'):
+                    liga_lookup_indices.update(feature_record.Feature.LookupListIndex)
+
+        for lookup_index in liga_lookup_indices:
+            lookup = gsub.LookupList.Lookup[lookup_index]
+            for subtable in lookup.SubTable:
+                actual = subtable.ExtSubTable if lookup.LookupType == 7 and hasattr(subtable, 'ExtSubTable') else subtable
+                if not hasattr(actual, 'ligatures'):
+                    continue
+                for first_glyph, ligature_list in actual.ligatures.items():
+                    if first_glyph not in glyph_to_cp:
+                        continue
+                    for ligature in ligature_list:
+                        if any(component not in glyph_to_cp for component in ligature.Component):
+                            continue
+                        sequence = tuple(
+                            [glyph_to_cp[first_glyph]]
+                            + [glyph_to_cp[component] for component in ligature.Component]
+                        )
+                        ligature_code_point = STANDARD_LIGATURE_MAP.get(sequence)
+                        if ligature_code_point is not None and ligature_code_point not in cmap:
+                            overrides[ligature_code_point] = glyph_indices[ligature.LigGlyph]
+
+    font.close()
+    return overrides
 
 
 def _extract_pairpos_subtable(subtable, glyph_to_cp, raw_kern):
@@ -534,6 +583,7 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0,
     # it before set_char_size() would waste work at the default size and risk
     # Invalid_Size_Handle on some fonts.
     face.set_char_size(size << 6, size << 6, 150, 150)
+    ligature_glyph_indices = extract_ligature_glyph_indices_fonttools(fontfile)
     fallback_face = None
     if fallback_fontfile:
         fallback_face = freetype.Face(fallback_fontfile)
@@ -546,6 +596,8 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0,
 
     def load_glyph(code_point):
         glyph_index = face.get_char_index(code_point)
+        if glyph_index == 0:
+            glyph_index = ligature_glyph_indices.get(code_point, 0)
         if glyph_index > 0:
             face.load_glyph(glyph_index, load_flags)
             return face
@@ -565,7 +617,7 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0,
     for i_start, i_end in intervals:
         start = i_start
         for code_point in range(i_start, i_end + 1):
-            has_primary_glyph = face.get_char_index(code_point) != 0
+            has_primary_glyph = face.get_char_index(code_point) != 0 or code_point in ligature_glyph_indices
             has_fallback_glyph = fallback_face is not None and fallback_face.get_char_index(code_point) != 0
             if not has_primary_glyph and not has_fallback_glyph:
                 if start < code_point:

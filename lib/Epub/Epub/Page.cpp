@@ -431,6 +431,10 @@ std::unique_ptr<Page> Page::deserialize(FsFile& file) {
     LOG_ERR("PGE", "Deserialization failed: element count %u exceeds maximum", count);
     return nullptr;
   }
+  // count has already been validated against a small hard limit, so reserve
+  // once instead of repeatedly growing the shared_ptr vector while loading
+  // (adapted from upstream fe37bf80).
+  page->elements.reserve(count);
 
   for (uint16_t i = 0; i < count; i++) {
     uint8_t tag;

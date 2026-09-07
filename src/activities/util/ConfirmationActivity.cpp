@@ -14,18 +14,40 @@ void ConfirmationActivity::onEnter() {
 
   lineHeight = renderer.getLineHeight(fontId);
   const int maxWidth = renderer.getScreenWidth() - (margin * 2);
+  safeHeading.clear();
+  bodyLines.clear();
+  bodyLines.reserve(MAX_BODY_LINES);
 
   if (!heading.empty()) {
     safeHeading = renderer.truncatedText(fontId, heading.c_str(), maxWidth, EpdFontFamily::BOLD);
   }
+  // Explanatory confirmation text must remain readable instead of losing its
+  // consequence at the edge of a single truncated line. Newlines delimit
+  // paragraphs, while the bounded line count keeps the button area clear.
   if (!body.empty()) {
-    safeBody = renderer.truncatedText(fontId, body.c_str(), maxWidth, EpdFontFamily::REGULAR);
+    size_t start = 0;
+    while (start <= body.size() && static_cast<int>(bodyLines.size()) < MAX_BODY_LINES) {
+      const size_t newline = body.find('\n', start);
+      const std::string paragraph =
+          body.substr(start, newline == std::string::npos ? std::string::npos : newline - start);
+      if (paragraph.empty()) {
+        bodyLines.emplace_back();
+      } else {
+        const int remaining = MAX_BODY_LINES - static_cast<int>(bodyLines.size());
+        auto wrapped = renderer.wrappedText(fontId, paragraph.c_str(), maxWidth, remaining, EpdFontFamily::REGULAR);
+        for (auto& line : wrapped) {
+          bodyLines.push_back(std::move(line));
+        }
+      }
+      if (newline == std::string::npos) break;
+      start = newline + 1;
+    }
   }
 
   int totalHeight = 0;
   if (!safeHeading.empty()) totalHeight += lineHeight;
-  if (!safeBody.empty()) totalHeight += lineHeight;
-  if (!safeHeading.empty() && !safeBody.empty()) totalHeight += spacing;
+  totalHeight += static_cast<int>(bodyLines.size()) * lineHeight;
+  if (!safeHeading.empty() && !bodyLines.empty()) totalHeight += spacing;
 
   startY = (renderer.getScreenHeight() - totalHeight) / 2;
 
@@ -44,8 +66,9 @@ void ConfirmationActivity::render(RenderLock&& lock) {
   }
 
   // Draw Body
-  if (!safeBody.empty()) {
-    renderer.drawCenteredText(fontId, currentY, safeBody.c_str(), true, EpdFontFamily::REGULAR);
+  for (const auto& line : bodyLines) {
+    renderer.drawCenteredText(fontId, currentY, line.c_str(), true, EpdFontFamily::REGULAR);
+    currentY += lineHeight;
   }
 
   // Draw UI Elements

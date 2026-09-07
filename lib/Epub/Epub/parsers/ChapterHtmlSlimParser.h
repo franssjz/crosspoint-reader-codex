@@ -5,6 +5,7 @@
 
 #include <climits>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <string>
@@ -31,6 +32,7 @@ class ChapterHtmlSlimParser {
     uint32_t xhtmlByteOffset = 0;
     uint16_t paragraphIndex = 0;
     uint16_t listItemIndex = 0;
+    uint32_t visibleTextOffset = 0;
   };
 
  private:
@@ -148,7 +150,7 @@ class ChapterHtmlSlimParser {
 
   // Anchor-to-page mapping: tracks which page each HTML id attribute lands on
   int completedPageCount = 0;
-  std::vector<std::pair<std::string, uint16_t>> anchorData;
+  std::deque<std::pair<std::string, uint16_t>> anchorData;
   std::string pendingAnchorId;          // deferred until after previous text block is flushed
   std::vector<std::string> tocAnchors;  // the list of anchors that are TOC chapter boundaries
   std::vector<std::string> referencedAnchors;
@@ -156,6 +158,14 @@ class ChapterHtmlSlimParser {
   uint32_t lastBodyChildByteOffset = 0;
   uint16_t xpathParagraphIndex = 0;
   uint16_t xpathListItemIndex = 0;
+  // Stable source position: zero-based Unicode codepoints in visible body text.
+  uint32_t visibleTextOffset = 0;
+  uint32_t partWordVisibleOffset = 0;
+  uint32_t currentPageVisibleOffset = 0;
+  bool currentPageVisibleOffsetSet = false;
+  bool insideBody = false;
+  bool syntheticCharacterData = false;
+  uint16_t nonVisibleTextDepth = 0;
 
   // Footnote link tracking
   bool insideFootnoteLink = false;
@@ -178,6 +188,8 @@ class ChapterHtmlSlimParser {
   void startNewTextBlock(const BlockStyle& blockStyle);
   void flushPendingAnchor();
   void flushPartWordBuffer();
+  void flushLongTextBlockIfNeeded();
+  void setCurrentPageVisibleOffset(uint32_t offset);
   void makePages();
   void emitPage(uint32_t xhtmlByteOffset);
   void emitHorizontalRule(const BlockStyle& blockStyle);
@@ -235,8 +247,8 @@ class ChapterHtmlSlimParser {
   void abortParse();
   size_t parseBytesConsumed() { return parseFile_ ? parseFile_.position() : 0; }
   size_t parseTotalBytes() { return parseFile_ ? parseFile_.size() : 0; }
-  void addLineToPage(std::shared_ptr<TextBlock> line);
-  const std::vector<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }
+  void addLineToPage(std::shared_ptr<TextBlock> line, uint32_t visibleOffset);
+  const std::deque<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }
   bool wasLowMemoryFallbackTriggered() const { return lowMemoryImageFallback; }
   bool wasLowMemoryAbortTriggered() const { return lowMemoryAbort; }
 };

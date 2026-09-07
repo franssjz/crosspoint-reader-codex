@@ -54,5 +54,8 @@ class FontCacheManager {
   ScanMode scanMode_ = ScanMode::None;
   std::string scanText_;
   uint32_t scanStyleCounts_[4] = {};
-  int scanFontId_ = -1;
+  // SD font IDs are FNV hashes cast to int and may be negative, so occupancy
+  // must not be inferred from the ID value.
+  bool scanFontIdSet_ = false;
+  int scanFontId_ = 0;
 };

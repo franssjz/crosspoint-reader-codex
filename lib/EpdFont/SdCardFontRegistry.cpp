@@ -1,5 +1,6 @@
 #include "SdCardFontRegistry.h"
 
+#include <FsHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
 
@@ -179,8 +180,14 @@ bool SdCardFontRegistry::discover() {
 
   // Hidden root is scanned first so it wins on name collisions, matching the
   // sleep-folder pattern (/.sleep preferred over /sleep).
-  scanRoot(FONTS_DIR_HIDDEN, families_);
-  scanRoot(FONTS_DIR_VISIBLE, families_);
+  char hiddenRoot[16];
+  char visibleRoot[16];
+  if (FsHelpers::resolveRootDirectoryIgnoreCase(FONTS_DIR_HIDDEN, hiddenRoot, sizeof(hiddenRoot))) {
+    scanRoot(hiddenRoot, families_);
+  }
+  if (FsHelpers::resolveRootDirectoryIgnoreCase(FONTS_DIR_VISIBLE, visibleRoot, sizeof(visibleRoot))) {
+    scanRoot(visibleRoot, families_);
+  }
 
   // Sort families alphabetically
   std::sort(families_.begin(), families_.end(),
@@ -200,24 +207,32 @@ void SdCardFontRegistry::releaseMemory() {
   LOG_DBG("SDREG", "Released SD font registry memory");
 }
 
-const char* SdCardFontRegistry::findFamilyRoot(const char* familyName) {
-  if (!familyName || !*familyName) return nullptr;
+bool SdCardFontRegistry::findFamilyRoot(const char* familyName, char* rootPath, const size_t rootPathSize) {
+  if (!familyName || !*familyName || !rootPath || rootPathSize == 0) return false;
+  char resolvedRoot[16];
   char path[160];
-  snprintf(path, sizeof(path), "%s/%s", FONTS_DIR_HIDDEN, familyName);
-  if (Storage.exists(path)) return FONTS_DIR_HIDDEN;
-  snprintf(path, sizeof(path), "%s/%s", FONTS_DIR_VISIBLE, familyName);
-  if (Storage.exists(path)) return FONTS_DIR_VISIBLE;
-  return nullptr;
+  const char* candidates[] = {FONTS_DIR_HIDDEN, FONTS_DIR_VISIBLE};
+  for (const char* candidate : candidates) {
+    if (!FsHelpers::resolveRootDirectoryIgnoreCase(candidate, resolvedRoot, sizeof(resolvedRoot))) continue;
+    snprintf(path, sizeof(path), "%s/%s", resolvedRoot, familyName);
+    if (!Storage.exists(path)) continue;
+    const int written = snprintf(rootPath, rootPathSize, "%s", resolvedRoot);
+    return written > 0 && static_cast<size_t>(written) < rootPathSize;
+  }
+  return false;
 }
 
-const char* SdCardFontRegistry::defaultWriteRoot() {
+void SdCardFontRegistry::defaultWriteRoot(char* rootPath, const size_t rootPathSize) {
+  if (!rootPath || rootPathSize == 0) return;
   // If exactly one of the roots already exists, keep using it. Otherwise
   // (neither exists, or both exist) prefer the hidden root for new installs.
-  bool hiddenExists = Storage.exists(FONTS_DIR_HIDDEN);
-  bool visibleExists = Storage.exists(FONTS_DIR_VISIBLE);
-  if (hiddenExists) return FONTS_DIR_HIDDEN;
-  if (visibleExists) return FONTS_DIR_VISIBLE;
-  return FONTS_DIR_HIDDEN;
+  char resolvedRoot[16];
+  if (FsHelpers::resolveRootDirectoryIgnoreCase(FONTS_DIR_HIDDEN, resolvedRoot, sizeof(resolvedRoot)) ||
+      FsHelpers::resolveRootDirectoryIgnoreCase(FONTS_DIR_VISIBLE, resolvedRoot, sizeof(resolvedRoot))) {
+    snprintf(rootPath, rootPathSize, "%s", resolvedRoot);
+    return;
+  }
+  snprintf(rootPath, rootPathSize, "%s", FONTS_DIR_HIDDEN);
 }
 
 const SdCardFontFamilyInfo* SdCardFontRegistry::findFamily(const std::string& name) const {
