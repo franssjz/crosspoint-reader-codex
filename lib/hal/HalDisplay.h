@@ -60,7 +60,10 @@ class HalDisplay {
   void copyGrayscaleMsbBuffers(const uint8_t* msbBuffer);
   void cleanupGrayscaleBuffers(const uint8_t* bwBuffer);
 
-  void displayGrayBuffer(bool turnOffScreen = false);
+  // lut/factoryMode select the driver waveform: nullptr+false = differential
+  // overlay LUT; lut_factory_fast/quality + true = absolute 2-bit factory mode
+  // (self-contained power cycle, no revert needed).
+  void displayGrayBuffer(bool turnOffScreen = false, const unsigned char* lut = nullptr, bool factoryMode = false);
 
   // Tiled grayscale: stream one band of a plane straight to the controller.
   void writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, uint16_t yStart, uint16_t numRows);

@@ -16,6 +16,7 @@
 // and the JPEG/PNG callbacks pre-clamp destination ranges to screen bounds.
 struct DirectPixelWriter {
   uint8_t* fb;
+  uint8_t* fbMsb;  // second GRAY2 plane target when dual-plane strip mode is active
   GfxRenderer::RenderMode mode;
   bool darkMode;
   uint16_t displayWidthBytes;  // Runtime framebuffer stride (X4: 100, X3: 99)
@@ -34,6 +35,7 @@ struct DirectPixelWriter {
 
   void init(GfxRenderer& renderer) {
     fb = renderer.getWriteTarget();
+    fbMsb = renderer.isDualGray2Active() ? renderer.getWriteTargetMsb() : nullptr;
     mode = renderer.getRenderMode();
     darkMode = renderer.isDarkMode();
     displayWidthBytes = renderer.getDisplayWidthBytes();
@@ -150,6 +152,36 @@ struct DirectPixelWriter {
         break;
       case GfxRenderer::GRAYSCALE_LSB:
         draw = (pixelValue == 1);
+        state = false;
+        break;
+      case GfxRenderer::GRAY2_LSB: {
+        if (fbMsb != nullptr) {
+          // Dual-plane pass: write both plane bits from one decode.
+          // LSB (BW RAM) marks Black(0)+LightGray(2); MSB (RED RAM) marks
+          // Black(0)+DarkGray(1). Marks only — background stays cleared.
+          const bool lsb = !(pixelValue & 1);
+          const bool msb = pixelValue < 2;
+          if (!lsb && !msb) return;
+
+          const int phyX = rowPhyXBase + logicalX * phyXStepX;
+          const int phyY = rowPhyYBase + logicalX * phyYStepX;
+          const int sy = phyY - originY;
+          if (static_cast<unsigned>(sy) >= static_cast<unsigned>(clipRows)) return;
+
+          const uint32_t byteIndex = static_cast<uint32_t>(sy) * displayWidthBytes + (phyX >> 3);
+          const uint8_t bitMask = 1 << (7 - (phyX & 7));
+          if (lsb) fb[byteIndex] |= bitMask;
+          if (msb) fbMsb[byteIndex] |= bitMask;
+          return;
+        }
+        // Factory absolute LSB (BW RAM): mark Black(0) and LightGray(2).
+        draw = !(pixelValue & 1);
+        state = false;
+        break;
+      }
+      case GfxRenderer::GRAY2_MSB:
+        // Factory absolute MSB (RED RAM): mark Black(0) and DarkGray(1).
+        draw = (pixelValue < 2);
         state = false;
         break;
       default:

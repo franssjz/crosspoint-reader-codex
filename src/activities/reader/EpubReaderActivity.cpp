@@ -1876,6 +1876,13 @@ void EpubReaderActivity::renderContents(std::shared_ptr<Page> page, const int or
   HalDisplay::RefreshMode configuredRefreshMode = HalDisplay::FAST_REFRESH;
   const bool hasConfiguredRefreshMode = ReaderUtils::getConfiguredReaderRefreshMode(configuredRefreshMode);
 
+  // Decide the tone calibration before anything decodes an image: the factory
+  // path only runs when no refresh mode is forced, and image pixels are cached
+  // quantized for whichever waveform is in play.
+  const bool willUseFactoryGray = imagePageWithAA && !forceFullRefresh && !hasConfiguredRefreshMode;
+  renderer.setImageToneMode(willUseFactoryGray ? GfxRenderer::GrayscaleMode::FactoryQuality
+                                               : GfxRenderer::GrayscaleMode::Differential);
+
   page->render(renderer, SETTINGS.getReaderFontId(), orientedMarginLeft, orientedMarginTop, SETTINGS.bionicReading);
   drawTextHighlights(*page, orientedMarginTop, orientedMarginLeft);
   renderStatusBar();
@@ -1888,6 +1895,21 @@ void EpubReaderActivity::renderContents(std::shared_ptr<Page> page, const int or
     renderer.displayBuffer(configuredRefreshMode);
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   } else if (imagePageWithAA) {
+    // Factory absolute 2-bit grayscale (zgredex technique): white pre-flash,
+    // then the whole page — text and images — is driven by the OEM factory
+    // LUT in one pass. Better tonal range than the differential overlay and
+    // no double-fast blanking dance. Falls through to the differential path
+    // below only if the BW backup allocation fails.
+    if (renderFactoryGrayPage(*page, orientedMarginLeft, orientedMarginTop)) {
+      // Factory pass leaves gray charge a plain fast diff on the next page
+      // can't clear (#2190) — force the HALF ghost-cleanup path next.
+      pagesUntilFullRefresh = 1;
+      fcm->logStats("gray_factory_quality");
+      const auto tEnd = millis();
+      LOG_DBG("ERS", "Page render (factory): prewarm=%lums bw_render=%lums factory=%lums total=%lums",
+              tPrewarm - t0, tBwRender - tPrewarm, tEnd - tBwRender, tEnd - t0);
+      return;
+    }
     // Double FAST_REFRESH with selective image blanking (pablohc's technique):
     // HALF_REFRESH sets particles too firmly for the grayscale LUT to adjust.
     // Instead, blank only the image area and do two fast refreshes.
@@ -2014,6 +2036,59 @@ void EpubReaderActivity::renderContents(std::shared_ptr<Page> page, const int or
             tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay,
             needsGrayscale ? "skipped" : "off", tEnd - t0);
   }
+}
+
+bool EpubReaderActivity::renderFactoryGrayPage(Page& page, const int orientedMarginLeft,
+                                               const int orientedMarginTop) {
+  // Preserve the BW page across the factory render: the pre-flash clears the
+  // framebuffer, and the controller RAM must be re-synced to the BW page
+  // afterwards (the factory pass leaves both RAM planes gray-encoded).
+  if (!renderer.storeBwBuffer()) {
+    LOG_ERR("ERS", "Factory gray: BW backup alloc failed, using differential path");
+    return false;
+  }
+
+  // Pre-flash to white so the factory LUT drives particles from a known
+  // state — from white only downward transitions are needed, which the LUT
+  // handles cleanly. Must be HALF_REFRESH: BYPASS_RED guarantees true white
+  // regardless of RED RAM sync state; FAST_REFRESH diffs against RED RAM,
+  // which may be stale after any prior grayscale operation.
+  renderer.clearNextRefreshOverride();  // a pending override must not hijack the pre-flash
+  renderer.clearScreen();
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+
+  // The factory pass is absolute: it replaces the whole screen from the GRAY2
+  // planes, so everything drawn in the BW base — including highlights — must
+  // be re-rendered here or it disappears.
+  const auto renderFn = [&]() {
+    page.render(renderer, SETTINGS.getReaderFontId(), orientedMarginLeft, orientedMarginTop, SETTINGS.bionicReading);
+    drawTextHighlights(page, orientedMarginTop, orientedMarginLeft);
+    renderStatusBar();
+  };
+
+  if (!ReaderUtils::renderTiledGrayscale(renderer, "ERS", renderFn, nullptr,
+                                         GfxRenderer::GrayscaleMode::FactoryQuality,
+                                         /*syncControllerAfter=*/false)) {
+    // Strip scratch unavailable: render the planes in the framebuffer itself
+    // (safe — the BW page is held in the chunked backup).
+    renderer.clearScreen(0x00);
+    renderer.setRenderMode(GfxRenderer::GRAY2_LSB);
+    renderFn();
+    renderer.copyGrayscaleLsbBuffers();
+
+    renderer.clearScreen(0x00);
+    renderer.setRenderMode(GfxRenderer::GRAY2_MSB);
+    renderFn();
+    renderer.copyGrayscaleMsbBuffers();
+
+    renderer.displayGrayBuffer(GfxRenderer::grayscaleLutFor(GfxRenderer::GrayscaleMode::FactoryQuality), true);
+    renderer.setRenderMode(GfxRenderer::BW);
+  }
+
+  // Restore the BW page into the framebuffer and sync controller RAM to it so
+  // the next BW page turn diffs against the right base.
+  renderer.restoreBwBuffer();
+  return true;
 }
 
 void EpubReaderActivity::renderStatusBar() const {

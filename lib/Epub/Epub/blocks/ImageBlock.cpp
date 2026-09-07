@@ -12,6 +12,7 @@
 
 #include "../converters/DirectPixelWriter.h"
 #include "../converters/ImageDecoderFactory.h"
+#include "../converters/PixelCacheFormat.h"
 
 // Cache file format:
 // - uint16_t width
@@ -42,17 +43,33 @@ std::string getCachePath(const std::string& imagePath) {
   return imagePath + ".pxc";
 }
 
-bool readValidCacheHeader(FsFile& cacheFile, const int expectedWidth, const int expectedHeight, uint16_t& cachedWidth,
-                          uint16_t& cachedHeight) {
-  if (cacheFile.read(&cachedWidth, 2) != 2 || cacheFile.read(&cachedHeight, 2) != 2) return false;
+// `expectedVariant` may be null to accept any tone variant, for callers that
+// only need to know whether a structurally valid cache exists and have no
+// render context to compare against. A variant mismatch is then caught at
+// render time, which re-decodes.
+bool readValidCacheHeader(FsFile& cacheFile, const int expectedWidth, const int expectedHeight,
+                          const PixelCacheVariant* expectedVariant, uint16_t& cachedWidth, uint16_t& cachedHeight) {
+  uint16_t magic = 0;
+  uint8_t version = 0;
+  uint8_t variant = 0;
+  if (cacheFile.read(&magic, 2) != 2 || cacheFile.read(&version, 1) != 1 || cacheFile.read(&variant, 1) != 1 ||
+      cacheFile.read(&cachedWidth, 2) != 2 || cacheFile.read(&cachedHeight, 2) != 2) {
+    return false;
+  }
+
+  // A pre-versioning cache starts with its width here, which cannot collide
+  // with the magic — so those files are rejected and re-decoded rather than
+  // rendering with the calibration of an older firmware.
+  if (magic != PXC_MAGIC || version != PXC_VERSION) return false;
+
+  // Pixels calibrated for one waveform are not correct for the other.
+  if (expectedVariant != nullptr && static_cast<PixelCacheVariant>(variant) != *expectedVariant) return false;
 
   const int widthDiff = abs(cachedWidth - expectedWidth);
   const int heightDiff = abs(cachedHeight - expectedHeight);
   if (widthDiff > 1 || heightDiff > 1) return false;
 
-  const size_t bytesPerRow = (cachedWidth + 3) / 4;
-  const size_t expectedSize = 4 + bytesPerRow * cachedHeight;
-  return cacheFile.size() >= expectedSize;
+  return cacheFile.size() >= pxcExpectedSize(cachedWidth, cachedHeight);
 }
 
 constexpr size_t MAX_SESSION_IMAGE_FAILURES = 16;
@@ -82,15 +99,17 @@ void rememberImageFailure(const std::string& path) {
 }
 
 bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x, int y, int expectedWidth,
-                     int expectedHeight) {
+                     int expectedHeight, const PixelCacheVariant expectedVariant) {
   FsFile cacheFile;
   if (!Storage.openFileForRead("IMG", cachePath, cacheFile)) {
     return false;
   }
 
   uint16_t cachedWidth, cachedHeight;
-  if (!readValidCacheHeader(cacheFile, expectedWidth, expectedHeight, cachedWidth, cachedHeight)) {
-    LOG_ERR("IMG", "Invalid image cache: %s", cachePath.c_str());
+  if (!readValidCacheHeader(cacheFile, expectedWidth, expectedHeight, &expectedVariant, cachedWidth, cachedHeight)) {
+    // Stale (older firmware, or written for the other waveform). Fall through
+    // to a fresh decode, which overwrites it.
+    LOG_DBG("IMG", "Discarding stale image cache: %s", cachePath.c_str());
     return false;
   }
 
@@ -167,7 +186,7 @@ bool ImageBlock::hasValidCache() const {
   FsFile cacheFile;
   if (!Storage.openFileForRead("IMG", getCachePath(imagePath), cacheFile)) return false;
   uint16_t cachedWidth, cachedHeight;
-  return readValidCacheHeader(cacheFile, width, height, cachedWidth, cachedHeight);
+  return readValidCacheHeader(cacheFile, width, height, /*expectedVariant=*/nullptr, cachedWidth, cachedHeight);
 }
 
 bool ImageBlock::needsDecode() const { return !imageFailedThisSession(imagePath) && !hasValidCache(); }
@@ -245,9 +264,15 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
     return;
   }
 
+  // Pixels are quantized for a specific waveform's tone response, so the cache
+  // is only reusable under the same one.
+  const PixelCacheVariant cacheVariant = renderer.getImageToneMode() == GfxRenderer::GrayscaleMode::Differential
+                                             ? PixelCacheVariant::Differential
+                                             : PixelCacheVariant::FactoryLut;
+
   // Try to render from cache first
   std::string cachePath = getCachePath(imagePath);
-  if (renderFromCache(renderer, cachePath, x, y, width, height)) {
+  if (renderFromCache(renderer, cachePath, x, y, width, height, cacheVariant)) {
     return;  // Successfully rendered from cache
   }
 
@@ -289,6 +314,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   config.performanceMode = false;
   config.useExactDimensions = true;  // Use pre-calculated dimensions to avoid rounding mismatches
   config.cachePath = cachePath;      // Enable caching during decode
+  config.cacheVariant = cacheVariant;
 
   ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
   if (!decoder) {

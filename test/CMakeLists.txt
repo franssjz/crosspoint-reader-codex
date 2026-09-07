@@ -44,6 +44,7 @@ include(GoogleTest)
 
 add_subdirectory(utf8_compose)
 add_subdirectory(reader_position)
+add_subdirectory(gray_pipeline)
 add_subdirectory(credential_integrity)
 add_subdirectory(reader_regressions)
 

@@ -106,6 +106,11 @@ class EpubReaderActivity final : public Activity {
   void renderContents(std::shared_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
   void drawTextHighlights(const Page& page, int orientedMarginTop, int orientedMarginLeft) const;
+  // Render an image page as absolute 2-bit grayscale via the OEM factory LUT
+  // (white pre-flash + GRAY2 planes + factory waveform). Returns false without
+  // touching the panel if the BW backup allocation fails; caller falls back to
+  // the differential overlay path.
+  bool renderFactoryGrayPage(Page& page, int orientedMarginLeft, int orientedMarginTop);
   void renderStatusBar() const;
   void renderSectionLoadFailure();
   ReaderRenderSpec makeRenderSpec(uint16_t viewportWidth, uint16_t viewportHeight) const;

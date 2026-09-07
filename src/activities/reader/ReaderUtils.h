@@ -146,34 +146,54 @@ inline void requestReaderUiTransitionRefresh(GfxRenderer& renderer) {
   renderer.requestNextRefresh(HalDisplay::HALF_REFRESH);
 }
 
-// Grayscale anti-aliasing pass. Renders content twice (LSB + MSB) to build
-// the grayscale buffer. Only the content callback is re-rendered — status bars
-// and other overlays should be drawn before calling this.
+// Grayscale pass. Renders content twice (LSB + MSB) to build the grayscale
+// planes, streaming one strip at a time so no full plane buffer is held in
+// heap. Only the content callback is re-rendered — status bars and other
+// overlays should be drawn before calling this.
+// `mode` selects the waveform: Differential (default) overlays AA grays on a
+// displayed BW base frame; FactoryFast/FactoryQuality render the page as
+// absolute 2-bit via the OEM factory LUTs (caller must pre-flash to white
+// first and restore/sync the BW framebuffer afterwards — pass
+// syncControllerAfter=false in that case since the framebuffer no longer
+// holds the BW page).
 // Kept as a template to avoid std::function overhead; instantiated once per reader type.
 template <typename RenderFn>
 bool renderTiledGrayscale(GfxRenderer& renderer, const char* tag, RenderFn&& renderFn,
-                          TiledGrayscaleTimings* timings = nullptr) {
+                          TiledGrayscaleTimings* timings = nullptr,
+                          GfxRenderer::GrayscaleMode mode = GfxRenderer::GrayscaleMode::Differential,
+                          bool syncControllerAfter = true) {
   if (!renderer.supportsStripGrayscale()) {
     return false;
   }
 
-  constexpr int STRIP_ROWS = 80;
+  // Each strip pass re-runs renderFn, which re-decodes any images on the page
+  // from SD — strip count directly multiplies that cost (measured ~130ms per
+  // pass for a PXC-cached illustration). Prefer a 160-row scratch (3 strips on
+  // a 480-row panel) and fall back to 80 rows (6 strips) under memory pressure.
+  constexpr int STRIP_ROWS_PREFERRED = 160;
+  constexpr int STRIP_ROWS_FALLBACK = 80;
   const int displayHeight = renderer.getDisplayHeight();
   const int displayWidthBytes = renderer.getDisplayWidthBytes();
   const auto heapBefore = MemoryBudget::snapshot();
+  int stripRows = STRIP_ROWS_PREFERRED;
   auto scratch =
-      std::unique_ptr<uint8_t[]>(new (std::nothrow) uint8_t[static_cast<size_t>(displayWidthBytes) * STRIP_ROWS]);
+      std::unique_ptr<uint8_t[]>(new (std::nothrow) uint8_t[static_cast<size_t>(displayWidthBytes) * stripRows]);
+  if (!scratch) {
+    stripRows = STRIP_ROWS_FALLBACK;
+    scratch =
+        std::unique_ptr<uint8_t[]>(new (std::nothrow) uint8_t[static_cast<size_t>(displayWidthBytes) * stripRows]);
+  }
   const auto heapAfterAlloc = MemoryBudget::snapshot();
   if (!scratch) {
     LOG_ERR(tag, "OOM: grayscale strip scratch (%d bytes); falling back to BW snapshot",
-            displayWidthBytes * STRIP_ROWS);
+            displayWidthBytes * stripRows);
     return false;
   }
 
   auto renderPlane = [&](const GfxRenderer::RenderMode mode, const bool lsbPlane) {
     renderer.setRenderMode(mode);
-    for (int y = 0; y < displayHeight; y += STRIP_ROWS) {
-      const int rows = std::min(STRIP_ROWS, displayHeight - y);
+    for (int y = 0; y < displayHeight; y += stripRows) {
+      const int rows = std::min(stripRows, displayHeight - y);
       {
         GfxStripTargetScope strip(renderer, scratch.get(), y, rows);
         renderer.clearScreen(0x00);
@@ -183,16 +203,53 @@ bool renderTiledGrayscale(GfxRenderer& renderer, const char* tag, RenderFn&& ren
     }
   };
 
-  renderPlane(GfxRenderer::GRAYSCALE_LSB, true);
-  const uint32_t tGrayLsb = millis();
+  const bool factory = mode != GfxRenderer::GrayscaleMode::Differential;
 
-  renderPlane(GfxRenderer::GRAYSCALE_MSB, false);
-  const uint32_t tGrayMsb = millis();
+  // Factory dual-plane: one renderFn pass per strip produces both GRAY2
+  // planes (second scratch mirrors 1-bit draws; 2-bit draws write per-plane
+  // bits). Halves the image re-decode cost vs plane-major two-pass. Falls
+  // back to two-pass GRAY2 if the second scratch can't be allocated.
+  uint32_t tGrayLsb = 0;
+  uint32_t tGrayMsb = 0;
+  bool dualPlaneDone = false;
+  if (factory) {
+    auto scratchMsb =
+        std::unique_ptr<uint8_t[]>(new (std::nothrow) uint8_t[static_cast<size_t>(displayWidthBytes) * stripRows]);
+    if (scratchMsb) {
+      renderer.setRenderMode(GfxRenderer::GRAY2_LSB);
+      for (int y = 0; y < displayHeight; y += stripRows) {
+        const int rows = std::min(stripRows, displayHeight - y);
+        {
+          GfxStripTargetScope strip(renderer, scratch.get(), y, rows, scratchMsb.get());
+          renderer.clearScreen(0x00);
+          renderFn();
+        }
+        renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
+        renderer.writeGrayscalePlaneStrip(false, scratchMsb.get(), y, rows);
+      }
+      tGrayLsb = millis();
+      tGrayMsb = tGrayLsb;
+      dualPlaneDone = true;
+    } else {
+      LOG_DBG(tag, "Dual-plane scratch OOM (%d bytes); factory grayscale falling back to two-pass",
+              displayWidthBytes * stripRows);
+    }
+  }
+
+  if (!dualPlaneDone) {
+    renderPlane(factory ? GfxRenderer::GRAY2_LSB : GfxRenderer::GRAYSCALE_LSB, true);
+    tGrayLsb = millis();
+
+    renderPlane(factory ? GfxRenderer::GRAY2_MSB : GfxRenderer::GRAYSCALE_MSB, false);
+    tGrayMsb = millis();
+  }
 
   renderer.setRenderMode(GfxRenderer::BW);
-  renderer.displayGrayBuffer();
+  renderer.displayGrayBuffer(GfxRenderer::grayscaleLutFor(mode), factory);
   const uint32_t tGrayDisplay = millis();
-  renderer.cleanupGrayscaleWithFrameBuffer();
+  if (syncControllerAfter) {
+    renderer.cleanupGrayscaleWithFrameBuffer();
+  }
   const uint32_t tCleanup = millis();
 
   if (timings) {
@@ -204,7 +261,7 @@ bool renderTiledGrayscale(GfxRenderer& renderer, const char* tag, RenderFn&& ren
 
   const auto heapAfter = MemoryBudget::snapshot();
   LOG_DBG(tag, "Tiled grayscale RAM: scratch=%d free=%u->%u->%u maxAlloc=%u->%u->%u",
-          displayWidthBytes * STRIP_ROWS, heapBefore.freeHeap, heapAfterAlloc.freeHeap, heapAfter.freeHeap,
+          displayWidthBytes * stripRows, heapBefore.freeHeap, heapAfterAlloc.freeHeap, heapAfter.freeHeap,
           heapBefore.maxAllocHeap, heapAfterAlloc.maxAllocHeap, heapAfter.maxAllocHeap);
   return true;
 }
