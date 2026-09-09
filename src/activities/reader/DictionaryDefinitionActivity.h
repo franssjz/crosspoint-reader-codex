@@ -7,6 +7,8 @@
 #include <vector>
 
 #include "../Activity.h"
+#include "DictionaryNavigation.h"
+#include "DictionaryStore.h"
 
 struct Rect;
 
@@ -47,9 +49,29 @@ class DictionaryDefinitionActivity final : public Activity {
   int linesPerPage = 1;
   int totalPages = 1;
 
+  enum class View : uint8_t { Definition, Actions, WordSelection, Dictionaries, LookupError };
+  View view = View::Definition;
+  int menuIndex = 0;
+  int selectedWordOrdinal = 0;
+  int selectableWordCount = 0;
+  int selectedWordLine = 0;
+  int selectedWordX = 0;
+  int selectedWordWidth = 0;
+  std::string selectedWord;
+  std::string pendingQuery;
+  bool pendingAppend = false;
+  DictionaryLookupResult::Status lookupStatus = DictionaryLookupResult::Status::NotFound;
+  bool chainLimitReached = false;
+  DictionaryNavigation::Trail trail;
+
   Rect overlayRect() const;
   void wrapText();
   void prepareDefinitionFontMetrics();
   int measureDefinitionText(const char* text) const;
-  void prewarmVisibleDefinitionText() const;
+  void updateWordSelection();
+  void openDictionaryPicker();
+  bool lookupWord(const std::string& query, bool append, int restorePage = 0);
+  void returnToPreviousLookup();
+  void finishDefinition();
+  void renderMenu(const Rect& rect, int bodyY);
 };

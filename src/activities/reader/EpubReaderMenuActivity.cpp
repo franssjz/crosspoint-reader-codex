@@ -5,6 +5,7 @@
 
 #include <algorithm>
 
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -17,6 +18,7 @@ EpubReaderMenuActivity::EpubReaderMenuActivity(GfxRenderer& renderer, MappedInpu
       menuItems(buildMenuItems(hasFootnotes)),
       title(title),
       pendingOrientation(currentOrientation),
+      selectedPageTurnOption(SETTINGS.readerAutoPageTurn),
       currentPage(currentPage),
       totalPages(totalPages),
       bookProgressPercent(bookProgressPercent) {}
@@ -43,6 +45,8 @@ std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuI
   items.push_back({MenuAction::MARK_AS_FINISHED, StrId::STR_MARK_AS_FINISHED});
   items.push_back({MenuAction::GO_HOME, StrId::STR_GO_HOME_BUTTON});
   items.push_back({MenuAction::SYNC, StrId::STR_SYNC_PROGRESS});
+  items.push_back({MenuAction::SEND_NEARBY_POSITION, StrId::STR_NEARBY_SEND_POSITION});
+  items.push_back({MenuAction::RECEIVE_NEARBY_POSITION, StrId::STR_NEARBY_RECEIVE_POSITION});
   items.push_back({MenuAction::DELETE_CACHE, StrId::STR_DELETE_CACHE});
   return items;
 }
@@ -134,7 +138,8 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
   // Menu Items
   const int startY = 75 + contentY;
   constexpr int lineHeight = 28;
-  const int listBottom = std::max(startY + lineHeight, pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing);
+  const int listBottom =
+      std::max(startY + lineHeight, pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing);
   const int visibleRows = std::max(1, std::min(static_cast<int>(menuItems.size()), (listBottom - startY) / lineHeight));
   int firstVisible = 0;
   if (selectedIndex >= visibleRows) {

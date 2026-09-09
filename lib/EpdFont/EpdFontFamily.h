@@ -12,11 +12,12 @@ class EpdFontFamily {
     BOLD = 1,
     ITALIC = 2,
     BOLD_ITALIC = 3,
-    UNDERLINE = 4,      // drawn as a line below baseline by TextBlock::render()
-    STRIKETHROUGH = 8,  // drawn as a line through midline by TextBlock::render()
-    SUP = 16,           // superscript: glyph scaled 50%, raised ~40% of ascender
-    SUB = 32,           // subscript: glyph scaled 50%, lowered ~25% of ascender
-    RUBY_CONTINUE = 64, // follower inside a grouped ruby annotation
+    UNDERLINE = 4,        // drawn as a line below baseline by TextBlock::render()
+    STRIKETHROUGH = 8,    // drawn as a line through midline by TextBlock::render()
+    SUP = 16,             // superscript: glyph scaled 50%, raised ~40% of ascender
+    SUB = 32,             // subscript: glyph scaled 50%, lowered ~25% of ascender
+    SMALL_CAPS = 64,      // lowercase glyph rendered as a scaled uppercase glyph
+    RUBY_CONTINUE = 128,  // follower inside a grouped ruby annotation
   };
 
   explicit EpdFontFamily(const EpdFont* regular, const EpdFont* bold = nullptr, const EpdFont* italic = nullptr,

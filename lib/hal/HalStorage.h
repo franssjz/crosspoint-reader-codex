@@ -62,6 +62,8 @@ class HalFile : public Print {
   friend class HalStorage;
   class Impl;
   std::unique_ptr<Impl> impl;
+  bool allocationFailed_ = false;
+  bool iterationFailed_ = false;
   explicit HalFile(std::unique_ptr<Impl> impl);
 
  public:
@@ -92,6 +94,10 @@ class HalFile : public Print {
   void rewindDirectory();
   bool close();
   HalFile openNextFile();
+  // An invalid next entry can mean normal EOF, an SD read error, or OOM.
+  // Inspect the directory handle after enumeration to distinguish them.
+  bool allocationFailed() const { return allocationFailed_; }
+  bool iterationFailed() const { return iterationFailed_; }
   bool isOpen() const;
   operator bool() const;
 };

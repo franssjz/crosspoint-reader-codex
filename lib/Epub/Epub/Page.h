@@ -121,10 +121,45 @@ class PageTableFragment final : public PageElement {
   static std::unique_ptr<PageTableFragment> deserialize(FsFile& file);
   uint16_t getHeight() const;
   void recordFontUsage(FontCacheManager& fontCacheManager, int fontId, uint8_t bionicReadingMode = 0) const;
+  template <class Visitor>
+  bool forEachTextLine(Visitor& visitor, uint16_t& flow) const {
+    if (columnCount == 0 || columnCount > TableFragmentRow::MAX_SERIALIZED_CELLS || width < 2) return true;
+    int rowY = yPos;
+    for (const auto& row : rows) {
+      for (size_t col = 0; col < row.cells.size() && col < columnCount; ++col) {
+        ++flow;
+        const int cellX = xPos + static_cast<int>((static_cast<uint32_t>(width) * col) / columnCount) + cellPadding;
+        int lineY = rowY + cellPadding;
+        for (const auto& line : row.cells[col].lines) {
+          if (line && !visitor(*line, cellX, lineY, flow)) return false;
+          lineY += lineHeight;
+        }
+      }
+      rowY += row.height;
+    }
+    ++flow;  // Do not join a cell's last hyphen to the paragraph after the table.
+    return true;
+  }
 };
 
 class Page {
  public:
+  // Reader text in semantic order, with precisely the positions used by render.
+  // Different table cells have separate flow IDs even when they share a screen Y.
+  // No temporary PageLines or allocations; false stops a bounded caller's scan.
+  template <class Visitor>
+  void forEachTextLine(Visitor visitor) const {
+    uint16_t flow = 0;
+    for (const auto& element : elements) {
+      if (!element) continue;
+      if (element->getTag() == TAG_PageLine) {
+        const auto& line = static_cast<const PageLine&>(*element);
+        if (line.getBlock() && !visitor(*line.getBlock(), line.xPos, line.yPos, flow)) return;
+      } else if (element->getTag() == TAG_PageTableFragment) {
+        if (!static_cast<const PageTableFragment&>(*element).forEachTextLine(visitor, flow)) return;
+      }
+    }
+  }
   // Source position is stored in the section LUT, not in the serialized page body.
   uint32_t visibleTextOffset = 0;
   // the list of block index and line numbers on this page
@@ -152,9 +187,8 @@ class Page {
 
   // Check if page contains any images (used to force full refresh)
   bool hasImages() const {
-    return std::any_of(elements.begin(), elements.end(), [](const std::shared_ptr<PageElement>& el) {
-      return el && el->getTag() == TAG_PageImage;
-    });
+    return std::any_of(elements.begin(), elements.end(),
+                       [](const std::shared_ptr<PageElement>& el) { return el && el->getTag() == TAG_PageImage; });
   }
 
   bool hasImagesNeedingDecode() const {

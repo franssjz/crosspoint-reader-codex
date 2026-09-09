@@ -2233,7 +2233,7 @@
    */
   async function extractImagesForPreview(file) {
     const zip = await JSZip.loadAsync(file);
-    const imageExtensions = ['.png', '.gif', '.webp', '.bmp', '.jpg', '.jpeg'];
+    const imageExtensions = ['.png', '.gif', '.webp', '.bmp', '.jpg', '.jpeg', '.svg'];
 
     // Collect all image paths first
     const allImages = [];
@@ -2403,11 +2403,11 @@
     const images = [];
     for (const path of orderedImages) {
       const data = await zip.files[path].async('arraybuffer');
-      const blob = new Blob([data]);
+      const blob = new Blob([data], { type: imageMimeType(path) });
       const dataUrl = URL.createObjectURL(blob);
 
       // Get dimensions
-      const dims = await getImageDimensions(data);
+      const dims = await getImageDimensions(data, path);
       
       // Check if this is the cover image
       const isCover = (path === coverImagePath) || 
@@ -2456,9 +2456,9 @@
   /**
    * Get image dimensions from array buffer
    */
-  function getImageDimensions(data) {
+  function getImageDimensions(data, filename = '') {
     return new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(new Blob([data]));
+      const url = URL.createObjectURL(new Blob([data], { type: imageMimeType(filename) }));
       const img = new Image();
       img.onload = () => {
         URL.revokeObjectURL(url);
@@ -3445,6 +3445,55 @@ function exportLogToFile(filename = null, isBatch = false) {
 /** Defensive CSS injected into every XHTML <head> — prevents e-ink overflow. */
 const DEFENSIVE_STYLE = '<style type="text/css">img,svg{max-width:100%;height:auto}body{overflow-wrap:break-word}table{max-width:100%;table-layout:fixed}pre,code{white-space:pre-wrap;word-wrap:break-word}*{box-sizing:border-box}</style>';
 
+/** Remove complete XML comments, preserving CDATA, processing instructions,
+ * quoted attributes and the complete DOCTYPE/internal subset byte for byte.
+ * An unterminated construct is left intact instead of discarding book text. */
+function stripComments(xml) {
+  const out = [];
+  const encoder = new TextEncoder();
+  let index = 0, count = 0, bytes = 0;
+  while (index < xml.length) {
+    const next = xml.indexOf('<', index);
+    if (next < 0) { out.push(xml.slice(index)); break; }
+    out.push(xml.slice(index, next));
+    if (xml.startsWith('<!--', next)) {
+      const close = xml.indexOf('-->', next + 4);
+      if (close < 0) { out.push(xml.slice(next)); break; }
+      bytes += encoder.encode(xml.slice(next, close + 3)).length;
+      count++;
+      index = close + 3;
+      continue;
+    }
+    const specialClose = xml.startsWith('<![CDATA[', next) ? ']]>' : xml.startsWith('<?', next) ? '?>' : null;
+    if (specialClose) {
+      const close = xml.indexOf(specialClose, next + 2);
+      if (close < 0) { out.push(xml.slice(next)); break; }
+      index = close + specialClose.length;
+      out.push(xml.slice(next, index));
+      continue;
+    }
+    const doctype = /^<!DOCTYPE\b/i.test(xml.slice(next, next + 10));
+    let quote = null, subsetDepth = 0, end = next + 1;
+    for (; end < xml.length; end++) {
+      const ch = xml[end];
+      if (quote) { if (ch === quote) quote = null; continue; }
+      if (doctype && xml.startsWith('<!--', end)) {
+        const close = xml.indexOf('-->', end + 4);
+        if (close < 0) { end = xml.length; break; }
+        end = close + 2;
+        continue;
+      }
+      if (ch === '"' || ch === "'") { quote = ch; continue; }
+      if (doctype && ch === '[') subsetDepth++;
+      if (doctype && ch === ']' && subsetDepth > 0) subsetDepth--;
+      if (ch === '>' && subsetDepth === 0) { end++; break; }
+    }
+    out.push(xml.slice(next, end));
+    index = end;
+  }
+  return { text: out.join(''), count, bytes };
+}
+
 /** Escape a string for safe insertion into XML attribute values / text content. */
 function xmlEscape(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -3680,7 +3729,7 @@ function fixOPF(opfText, opfOriginal, opfDir, splitImages = {}, fontPaths = null
     for (const item of items) {
       const href = item.getAttribute('href') || '';
       const type = item.getAttribute('media-type') || '';
-      if (href.endsWith('.jpg') && type.match(/^image\/(png|gif|webp|bmp)$/)) {
+      if (href.endsWith('.jpg') && type.match(/^image\/(png|gif|webp|bmp|svg\+xml)$/)) {
         item.setAttribute('media-type', 'image/jpeg');
       }
     }
@@ -3708,7 +3757,7 @@ function fixOPF(opfText, opfOriginal, opfDir, splitImages = {}, fontPaths = null
     for (const [splitKey, splitInfo] of Object.entries(splitImages)) {
       const parts = splitInfo.parts || splitInfo;
       let origHref = opfDir && splitKey.startsWith(opfDir + '/') ? splitKey.substring(opfDir.length + 1) : splitKey;
-      const origHrefJpg = origHref.replace(/\.(png|gif|webp|bmp|jpeg)$/i, '.jpg');
+      const origHrefJpg = origHref.replace(/\.(png|gif|webp|bmp|jpeg|svg)$/i, '.jpg');
       const part1Href = origHrefJpg.replace(/\.jpg$/i, '_part1.jpg');
 
       for (const item of items) {
@@ -3736,8 +3785,8 @@ function fixOPF(opfText, opfOriginal, opfDir, splitImages = {}, fontPaths = null
     t = safeSerialize(doc, opfOriginal);
   } catch (e) {
     // Regex fallback
-    t = t.replace(/(<(?:\w+:)?item\b[^>]*href="[^"]+\.jpg"[^>]*)media-type="image\/(png|gif|webp|bmp)"/g, '$1media-type="image/jpeg"');
-    t = t.replace(/(<(?:\w+:)?item\b[^>]*)media-type="image\/(png|gif|webp|bmp)"([^>]*href="[^"]+\.jpg")/g, '$1media-type="image/jpeg"$3');
+    t = t.replace(/(<(?:\w+:)?item\b[^>]*href="[^"]+\.jpg"[^>]*)media-type="image\/(png|gif|webp|bmp|svg\+xml)"/g, '$1media-type="image/jpeg"');
+    t = t.replace(/(<(?:\w+:)?item\b[^>]*)media-type="image\/(png|gif|webp|bmp|svg\+xml)"([^>]*href="[^"]+\.jpg")/g, '$1media-type="image/jpeg"$3');
     t = t.replace(/\s+svg(?=["'\s>])/g, '');
     if (fontPaths && fontPaths.size) {
       for (const path of fontPaths) {
@@ -3749,7 +3798,7 @@ function fixOPF(opfText, opfOriginal, opfDir, splitImages = {}, fontPaths = null
     for (const [splitKey, splitInfo] of Object.entries(splitImages)) {
       const parts = splitInfo.parts || splitInfo;
       let origHref = opfDir && splitKey.startsWith(opfDir + '/') ? splitKey.substring(opfDir.length + 1) : splitKey;
-      const origHrefJpg = origHref.replace(/\.(png|gif|webp|bmp|jpeg)$/i, '.jpg');
+      const origHrefJpg = origHref.replace(/\.(png|gif|webp|bmp|jpeg|svg)$/i, '.jpg');
       const part1Href = origHrefJpg.replace(/\.jpg$/i, '_part1.jpg');
       const origImgRegex = new RegExp(`(href=["'])(${escapeRegex(origHref)}|${escapeRegex(origHrefJpg)})(["'])`, 'gi');
       t = t.replace(origImgRegex, `$1${part1Href}$3`);
@@ -3994,7 +4043,7 @@ function applyGrayscale(ctx, width, height) {
 const IMAGE_LOAD_TIMEOUT_MS = 30000; // 30 second timeout for image loading
 async function processImage(data, imageState = 0, imagePath = '') {
   return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(new Blob([data]));
+    const url = URL.createObjectURL(new Blob([data], { type: imageMimeType(imagePath) }));
     const img = new Image();
     const origSize = data.byteLength;
     // Set up timeout to handle cases where image never loads
@@ -4345,6 +4394,21 @@ async function processImage(data, imageState = 0, imagePath = '') {
   });
 }
 
+function imageMimeType(filename) {
+  const extension = (filename || '').split('.').pop().toLowerCase();
+  const types = { svg: 'image/svg+xml', png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
+  return types[extension] || 'image/jpeg';
+}
+
+function imageOutputPathsConflict(path, parts, originalFiles, outputFiles) {
+  const base = path.replace(/\.[^.]+$/, '');
+  return parts.some(part => {
+    const candidate = base + part.suffix + '.jpg';
+    return candidate !== path && (Object.prototype.hasOwnProperty.call(originalFiles, candidate) ||
+                                  Object.prototype.hasOwnProperty.call(outputFiles, candidate));
+  });
+}
+
 function getConvertedImageOutputPath(path, processingError) {
   return processingError ? path : path.replace(/\.[^.]+$/, '.jpg');
 }
@@ -4385,13 +4449,16 @@ async function convertEpubFile(file, progressCallback) {
     if (fileObj.dir || path === 'mimetype') continue;
     const low = path.toLowerCase();
 
-    if (low.match(/\.(png|gif|webp|bmp|jpg|jpeg)$/)) {
+    if (low.match(/\.(png|gif|webp|bmp|jpg|jpeg|svg)$/)) {
       const data = await fileObj.async('arraybuffer');
       const imageState = getImageState(path);
 
       let result;
       try {
         result = await processImage(data, imageState, path);
+        if (imageOutputPathsConflict(path, result.parts, zip.files, out.files)) {
+          throw new Error('Converted image name conflicts with another EPUB resource');
+        }
       } catch (imageError) {
         // Log error but continue with original image
         console.error(`Failed to process image ${path}:`, imageError);
@@ -4488,6 +4555,11 @@ async function convertEpubFile(file, progressCallback) {
   for (const [xhtmlPath, content] of Object.entries(xhtmlFiles)) {
     if (operationCancelled) throw new Error('Cancelled by user');
     let t = content;
+    const stripped = stripComments(t);
+    if (stripped.count) {
+      t = stripped.text;
+      logFix(`Comments (${stripped.count}, ${formatBytes(stripped.bytes)})`, xhtmlPath.split('/').pop());
+    }
     const r = fixSvgCover(t);
     if (r.fixed) { t = r.c; logFix('SVG cover', xhtmlPath.split('/').pop()); }
 
@@ -4533,7 +4605,7 @@ async function convertEpubFile(file, progressCallback) {
             const origName = splitInfo.origName;
             const origDir = splitInfo.origDir;
             const parts = splitInfo.parts;
-            const newName = origName.replace(/\.(png|gif|webp|bmp|jpeg)$/i, '.jpg');
+            const newName = origName.replace(/\.(png|gif|webp|bmp|jpeg|svg)$/i, '.jpg');
 
             // Extract immediate parent directory for collision prevention
             const splitDirParts = origDir.split('/').filter(p => p);
@@ -4673,7 +4745,7 @@ async function convertEpubFile(file, progressCallback) {
     if (operationCancelled) throw new Error('Cancelled by user');
     if (fileObj.dir || path === 'mimetype') continue;
     const low = path.toLowerCase();
-    if (low.match(/\.(png|gif|webp|bmp|jpg|jpeg)$/) || low.match(/\.(xhtml|html|htm)$/) || low.endsWith('.opf')) continue;
+    if (low.match(/\.(png|gif|webp|bmp|jpg|jpeg|svg)$/) || low.match(/\.(xhtml|html|htm)$/) || low.endsWith('.opf')) continue;
 
     if (fontPaths.has(path)) {
       const fontData = await fileObj.async('arraybuffer');

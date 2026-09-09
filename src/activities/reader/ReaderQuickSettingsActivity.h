@@ -28,12 +28,14 @@ class ReaderQuickSettingsActivity final : public Activity {
 
   ButtonNavigator buttonNavigator;
   int selectedIndex = 0;
+  bool saveFailed = false;
 
   static const std::vector<QuickSetting>& settings();
   static std::string getSettingName(int index);
   static std::string getSettingValue(int index);
   static bool isImmediateRendererSetting(const QuickSetting& setting);
   static bool needsImmediateRendererFullRefresh(const QuickSetting& setting);
+  static int scopeRows() { return SETTINGS.hasBookReaderSettingsContext() ? 1 : 0; }
 
   void toggleSelectedSetting();
   void applyImmediateRendererSetting(const QuickSetting& setting);

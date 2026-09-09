@@ -52,17 +52,17 @@ The philosophy of this fork is simple: keep the firmware fast, stable, and focus
 |---|---|
 | Project | `CPR-vCodex` |
 | Device | `Xteink X4` (personally tested); `Xteink X3` UC8253/UC8279d runtime support, with broader physical feedback requested |
-| Current release (CPR-vCodex) build | [`1.5.0.24-cpr-vcodex`](https://github.com/franssjz/cpr-vcodex/releases/tag/1.5.0.24-cpr-vcodex) |
+| Current release (CPR-vCodex) build | [`1.5.0.25-cpr-vcodex`](https://github.com/franssjz/cpr-vcodex/releases/tag/1.5.0.25-cpr-vcodex) |
 | Release hardware stack | `freeink-sdk` [`a485dc46`](https://github.com/Free-Ink/freeink-sdk/commit/a485dc46ef5fb2283e4bdb674002ddbef97a9268), with runtime X3/X4 and X3 UC8253/UC8279d detection. |
 | Latest SD font package | [`sd-fonts-m1-b4`](https://github.com/franssjz/cpr-vcodex/releases/tag/sd-fonts-m1-b4) |
 | Changelog | [CHANGELOG.md](./CHANGELOG.md) |
 | Current release sync | Selected CrossPoint Reader 1.5 changes reviewed through `master` [`95a847c7`](https://github.com/crosspoint-reader/crosspoint-reader/commit/95a847c7210a5060cf0bb5a20fbc855869d735f2) and `develop` [`93d572fc`](https://github.com/crosspoint-reader/crosspoint-reader/commit/93d572fc), plus targeted CrossInk improvements, manually adapted to retain the vCodex band renderer, KOReader profiles, reading statistics, highlights, themes, ruby, Lyra, and SD-card fonts. Release `1.5.0.22` additionally adopts CrossPoint's pinned `freeink-sdk` hardware layer and the isolated SD recovery entry from [`5717374e`](https://github.com/crosspoint-reader/crosspoint-reader/commit/5717374e4be88b3d30f45626bf796ceb3687c836). |
-| Current release focus | Supports original and newer X3 panels through runtime detection, modernizes the X3/X4 hardware layer, and provides a deterministic SD recovery path for USB-locked devices. |
-| Latest release notes | - One firmware selects X4, X3 UC8253, or X3 UC8279d hardware at boot.<br>- Battery, USB wake, GPIO wake, and deep sleep use runtime board profiles while preserving X4's battery latch and X3's RTC/fuel gauge.<br>- Holding `UP + POWER` at wake enters the SD firmware picker directly; the blind-recovery sequence is documented in `USER_GUIDE.md`. |
+| Current release focus | Brings selected CrossInk reader, keyboard, transfer, indexing, and format improvements into CPR-vCodex while preserving all existing user settings and data formats. |
+| Latest release notes | - Per-book reader settings, word spacing, automatic page turns, cross-page selection, chained dictionary lookup, and CSS small caps.<br>- Selectable Latin/Cyrillic keyboards, Quick Lock, PNG browsing, and nearby file/reading-position transfer.<br>- Atomic recovery for user data and progress, bounded EPUB/XTC processing, 203 host regressions, and about 445 KiB less release flash usage. |
 | Base firmware line | `CrossPoint Reader 1.5.0` |
 | Latest official commit reviewed | `master` through [`95a847c7`](https://github.com/crosspoint-reader/crosspoint-reader/commit/95a847c7210a5060cf0bb5a20fbc855869d735f2) and `develop` through [`93d572fc`](https://github.com/crosspoint-reader/crosspoint-reader/commit/93d572fc) |
-| Latest official commit incorporated | Release `1.5.0.22` retains the selected CrossPoint Reader changes incorporated through `1.5.0.21`, migrates the hardware layer to CrossPoint's pinned `freeink-sdk`, and restores the isolated SD recovery entry; FUI, settings-persistence, touch, and RTL rewrites remain intentionally deferred. |
-| Intentional upstream exclusions | Unsupported upstream theme variants such as `RoundedRaff` remain out of the supported vCodex theme list; other upstream UI/config changes are adapted selectively to preserve the existing X4 workflow. |
+| Latest official commit incorporated | Release `1.5.0.25` retains the CrossPoint/freeink hardware base and manually adapts the useful CrossInk reader, storage, keyboard, file-index, networking, and font work without replacing CPR-vCodex's data model or UI stack. |
+| Intentional upstream exclusions | Whole-UI/SDK replacement, reboot-on-OOM behaviour, S3-only features, global CSS deduplication, unsupported themes, and Hebrew editing without a complete bidirectional text engine remain excluded. |
 
 ## Froze in Update Complete (Soft Bricked?) — X3 recovery
 
@@ -620,7 +620,7 @@ Important artifacts include:
 
 ### Recovering Reading Stats after 1.5.0.1 or 1.5.0.2
 
-Update to `1.5.0.24-cpr-vcodex` before resetting or deleting any data. In most cases the existing `/.crosspoint/reading_stats.json` will load automatically after the update because the affected releases rejected the file without overwriting it.
+Update to `1.5.0.25-cpr-vcodex` before resetting or deleting any data. In most cases the existing `/.crosspoint/reading_stats.json` will load automatically after the update because the affected releases rejected the file without overwriting it.
 
 If the displayed totals are still incomplete or incorrect, open `Settings > Apps > Reading Stats > Import Reading Stats` and select the newest suitable dated backup under `/exports/stats_backup_YYYY-MM-DD`. Those weekly backups appear directly in the import list and do not need to be renamed. If the only copy is on a computer, place it on the SD card as exactly `/exports/stats_exported` (without a `.json` extension), then import it. Try older dated backups newest-first if necessary, and preserve a copy of the SD card before cleaning or resetting statistics.
 
@@ -633,7 +633,7 @@ Each packaged dev build now keeps the base firmware line and the local flash ide
 Practical values to look at:
 
 - base firmware line: `CrossPoint Reader 1.5.0`
-- current release build style: `1.5.0.24-cpr-vcodex`
+- current release build style: `1.5.0.25-cpr-vcodex`
 - packaged artifact style: `artifacts/<version>-cpr-vcodex.bin`
 
 The incremental `.bNNNN` suffix exists specifically to help distinguish newer flashes from older ones on real hardware.
@@ -703,10 +703,10 @@ Release publishing:
 - before tagging, run:
 
 ```powershell
-python scripts/pre_release_check.py --tag 1.5.0.24-cpr-vcodex
+python scripts/pre_release_check.py --tag 1.5.0.25-cpr-vcodex
 ```
 
-- push a stable tag named like `1.5.0.24-cpr-vcodex`
+- push a stable tag named like `1.5.0.25-cpr-vcodex`
 - the release workflow builds `gh_release`, validates that the packaged artifact
   name matches the tag, and attaches the flashable `<tag>.bin`, build metadata,
   and firmware-budget reports to the GitHub Release

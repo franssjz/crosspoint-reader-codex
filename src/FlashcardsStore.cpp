@@ -14,6 +14,7 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "util/AtomicFileReplace.h"
 #include "util/BookIdentity.h"
 #include "util/CprVcodexLogs.h"
 #include "util/TimeUtils.h"
@@ -91,9 +92,8 @@ void trimAsciiInPlace(std::string& value) {
 }
 
 std::string toLowerAscii(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) {
-    return static_cast<char>(std::tolower(ch));
-  });
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
   return value;
 }
 
@@ -153,28 +153,20 @@ bool saveJsonDocumentToFile(const char* moduleName, const char* path, const Json
     return false;
   }
 
+  const size_t expected = measureJson(doc);
   const size_t written = serializeJson(doc, file);
   file.flush();
-  file.close();
-  if (written == 0) {
+  const bool closed = file.close();
+  if (!closed || written == 0 || written != expected) {
     Storage.remove(tempPath.c_str());
-    CPR_VCODEX_LOG_EVENT(moduleName, std::string("serializeJson wrote 0 bytes for ") + targetPath);
+    CPR_VCODEX_LOG_EVENT(moduleName, std::string("Incomplete flashcard JSON write for ") + targetPath);
     return false;
   }
 
-  if (Storage.exists(targetPath.c_str()) && !Storage.remove(targetPath.c_str())) {
-    Storage.remove(tempPath.c_str());
-    LOG_ERR(moduleName, "Could not remove JSON file before replace: %s", targetPath.c_str());
-    CPR_VCODEX_LOG_EVENT(moduleName,
-                               std::string("Could not remove JSON file before replace: ") + targetPath);
-    return false;
-  }
-
-  if (!Storage.rename(tempPath.c_str(), targetPath.c_str())) {
-    Storage.remove(tempPath.c_str());
-    LOG_ERR(moduleName, "Could not rename JSON temp file to final path: %s", targetPath.c_str());
-    CPR_VCODEX_LOG_EVENT(moduleName,
-                               std::string("Could not rename JSON temp file to final path: ") + targetPath);
+  const std::string previousPath = targetPath + ".previous";
+  if (!AtomicFileReplace::promote(Storage, tempPath.c_str(), targetPath.c_str(), previousPath.c_str())) {
+    LOG_ERR(moduleName, "Could not atomically replace flashcard JSON: %s", targetPath.c_str());
+    CPR_VCODEX_LOG_EVENT(moduleName, std::string("Preserved flashcard JSON after failed replacement: ") + targetPath);
     return false;
   }
 
@@ -196,8 +188,8 @@ bool loadJsonDocumentFromFile(const char* moduleName, const char* path, JsonDocu
   if (error) {
     LOG_ERR(moduleName, "JSON parse error in %s: %s", path, error.c_str());
 #ifndef CPR_DISABLE_EVENT_LOGS
-    const std::string reportBody = std::string("File: ") + path + "\nModule: " + moduleName +
-                                   "\nError: " + error.c_str() + "\n";
+    const std::string reportBody =
+        std::string("File: ") + path + "\nModule: " + moduleName + "\nError: " + error.c_str() + "\n";
     std::string outPath;
     if (CPR_VCODEX_WRITE_REPORT("json_error", reportBody, &outPath)) {
       CPR_VCODEX_LOG_EVENT(moduleName, std::string("Saved JSON parse error report to ") + outPath);
@@ -325,21 +317,13 @@ int getConfiguredSessionLimit() {
   }
 }
 
-bool isScheduledMode() {
-  return SETTINGS.flashcardStudyMode == CrossPointSettings::FLASHCARD_STUDY_SCHEDULED;
-}
+bool isScheduledMode() { return SETTINGS.flashcardStudyMode == CrossPointSettings::FLASHCARD_STUDY_SCHEDULED; }
 
-bool isDueMode() {
-  return SETTINGS.flashcardStudyMode == CrossPointSettings::FLASHCARD_STUDY_DUE;
-}
+bool isDueMode() { return SETTINGS.flashcardStudyMode == CrossPointSettings::FLASHCARD_STUDY_DUE; }
 
-bool isInfiniteMode() {
-  return SETTINGS.flashcardStudyMode == CrossPointSettings::FLASHCARD_STUDY_INFINITE;
-}
+bool isInfiniteMode() { return SETTINGS.flashcardStudyMode == CrossPointSettings::FLASHCARD_STUDY_INFINITE; }
 
-bool isSequentialMode() {
-  return SETTINGS.flashcardStudyMode == CrossPointSettings::FLASHCARD_STUDY_SEQUENTIAL;
-}
+bool isSequentialMode() { return SETTINGS.flashcardStudyMode == CrossPointSettings::FLASHCARD_STUDY_SEQUENTIAL; }
 
 std::vector<int> buildDeckOrderQueue(const FlashcardDeck& deck) {
   std::vector<int> queue(deck.cards.size());
@@ -434,9 +418,9 @@ bool FlashcardsStore::removeRecentDeck(const std::string& deckIdOrPath) {
   }
 
   const auto oldSize = recentDeckIds.size();
-  recentDeckIds.erase(
-      std::remove_if(recentDeckIds.begin(), recentDeckIds.end(), [&](const std::string& value) { return value == deckId; }),
-      recentDeckIds.end());
+  recentDeckIds.erase(std::remove_if(recentDeckIds.begin(), recentDeckIds.end(),
+                                     [&](const std::string& value) { return value == deckId; }),
+                      recentDeckIds.end());
   if (recentDeckIds.size() == oldSize) {
     return false;
   }
@@ -513,6 +497,11 @@ bool FlashcardsStore::saveToFile() const {
 
 bool FlashcardsStore::loadFromFile() {
   const std::string indexPath = getIndexPath();
+  const std::string previousPath = indexPath + ".previous";
+  if (!AtomicFileReplace::recover(Storage, indexPath.c_str(), previousPath.c_str()) &&
+      Storage.exists(previousPath.c_str())) {
+    return false;
+  }
   const std::string tempPath = indexPath + ".tmp";
   if (!Storage.exists(indexPath.c_str()) && Storage.exists(tempPath.c_str())) {
     if (Storage.rename(tempPath.c_str(), indexPath.c_str())) {
@@ -520,13 +509,17 @@ bool FlashcardsStore::loadFromFile() {
     }
   }
 
-  knownDecks.clear();
-  recentDeckIds.clear();
-
   JsonDocument doc;
   if (!loadJsonDocumentFromFile("FCS", indexPath.c_str(), doc)) {
-    return false;
+    if (!Storage.exists(previousPath.c_str()) || !loadJsonDocumentFromFile("FCS", previousPath.c_str(), doc)) {
+      return false;
+    }
   }
+
+  // Keep an already loaded in-memory index intact until a complete committed
+  // document (or its previous committed copy) has been parsed.
+  knownDecks.clear();
+  recentDeckIds.clear();
 
   for (JsonVariant value : doc["recentDeckIds"].as<JsonArray>()) {
     const std::string deckId = value | std::string("");
@@ -557,10 +550,10 @@ bool FlashcardsStore::loadFromFile() {
     knownDecks.push_back(std::move(record));
   }
 
-  recentDeckIds.erase(std::remove_if(recentDeckIds.begin(), recentDeckIds.end(), [this](const std::string& deckId) {
-                    return findDeckRecordInternal(deckId) == nullptr;
-                  }),
-                  recentDeckIds.end());
+  recentDeckIds.erase(
+      std::remove_if(recentDeckIds.begin(), recentDeckIds.end(),
+                     [this](const std::string& deckId) { return findDeckRecordInternal(deckId) == nullptr; }),
+      recentDeckIds.end());
   if (recentDeckIds.size() > MAX_RECENT_DECKS) {
     recentDeckIds.resize(MAX_RECENT_DECKS);
   }
@@ -646,40 +639,43 @@ bool FlashcardsStore::loadDeck(const std::string& path, FlashcardDeck& deck, std
     deck.cards.push_back(FlashcardCard{std::move(key), std::string(), std::string()});
   };
 
-  const bool parsedOk = parseCsvRows(file, [&](std::vector<std::string>& row) {
-    if (deckTooLarge) {
-      return;
-    }
-
-    parsedAnyRow = true;
-
-    if (firstRow) {
-      firstRow = false;
-      bool hasNamedHeader = false;
-      for (int index = 0; index < static_cast<int>(row.size()); ++index) {
-        const std::string field = toLowerAscii(trimAscii(row[index]));
-        if (field == "id" || field == "card_id") {
-          idColumn = index;
-          hasNamedHeader = true;
-        } else if (field == "front" || field == "question") {
-          frontColumn = index;
-          hasNamedHeader = true;
-        } else if (field == "back" || field == "answer") {
-          backColumn = index;
-          hasNamedHeader = true;
+  const bool parsedOk = parseCsvRows(
+      file,
+      [&](std::vector<std::string>& row) {
+        if (deckTooLarge) {
+          return;
         }
-      }
 
-      if (hasNamedHeader) {
-        invalidColumns = frontColumn == backColumn;
-        return;
-      }
-    }
+        parsedAnyRow = true;
 
-    if (!invalidColumns) {
-      processDataRow(row);
-    }
-  }, error);
+        if (firstRow) {
+          firstRow = false;
+          bool hasNamedHeader = false;
+          for (int index = 0; index < static_cast<int>(row.size()); ++index) {
+            const std::string field = toLowerAscii(trimAscii(row[index]));
+            if (field == "id" || field == "card_id") {
+              idColumn = index;
+              hasNamedHeader = true;
+            } else if (field == "front" || field == "question") {
+              frontColumn = index;
+              hasNamedHeader = true;
+            } else if (field == "back" || field == "answer") {
+              backColumn = index;
+              hasNamedHeader = true;
+            }
+          }
+
+          if (hasNamedHeader) {
+            invalidColumns = frontColumn == backColumn;
+            return;
+          }
+        }
+
+        if (!invalidColumns) {
+          processDataRow(row);
+        }
+      },
+      error);
   file.close();
 
   if (!parsedOk) {
@@ -734,64 +730,67 @@ bool FlashcardsStore::loadDeckCard(const FlashcardDeck& deck, const int cardInde
   bool stopRequested = false;
   int dataIndex = 0;
 
-  const bool parsedOk = parseCsvRows(file, [&](std::vector<std::string>& row) {
-    if (firstRow) {
-      firstRow = false;
-      bool hasNamedHeader = false;
-      for (int index = 0; index < static_cast<int>(row.size()); ++index) {
-        const std::string field = toLowerAscii(trimAscii(row[index]));
-        if (field == "id" || field == "card_id") {
-          idColumn = index;
-          hasNamedHeader = true;
-        } else if (field == "front" || field == "question") {
-          frontColumn = index;
-          hasNamedHeader = true;
-        } else if (field == "back" || field == "answer") {
-          backColumn = index;
-          hasNamedHeader = true;
+  const bool parsedOk = parseCsvRows(
+      file,
+      [&](std::vector<std::string>& row) {
+        if (firstRow) {
+          firstRow = false;
+          bool hasNamedHeader = false;
+          for (int index = 0; index < static_cast<int>(row.size()); ++index) {
+            const std::string field = toLowerAscii(trimAscii(row[index]));
+            if (field == "id" || field == "card_id") {
+              idColumn = index;
+              hasNamedHeader = true;
+            } else if (field == "front" || field == "question") {
+              frontColumn = index;
+              hasNamedHeader = true;
+            } else if (field == "back" || field == "answer") {
+              backColumn = index;
+              hasNamedHeader = true;
+            }
+          }
+
+          if (hasNamedHeader) {
+            invalidColumns = frontColumn == backColumn;
+            return;
+          }
         }
-      }
 
-      if (hasNamedHeader) {
-        invalidColumns = frontColumn == backColumn;
-        return;
-      }
-    }
+        if (invalidColumns) {
+          return;
+        }
 
-    if (invalidColumns) {
-      return;
-    }
+        const int maxColumn = std::max(frontColumn, backColumn);
+        if (static_cast<int>(row.size()) <= maxColumn) {
+          return;
+        }
 
-    const int maxColumn = std::max(frontColumn, backColumn);
-    if (static_cast<int>(row.size()) <= maxColumn) {
-      return;
-    }
+        trimAsciiInPlace(row[frontColumn]);
+        trimAsciiInPlace(row[backColumn]);
+        if (row[frontColumn].empty() && row[backColumn].empty()) {
+          return;
+        }
 
-    trimAsciiInPlace(row[frontColumn]);
-    trimAsciiInPlace(row[backColumn]);
-    if (row[frontColumn].empty() && row[backColumn].empty()) {
-      return;
-    }
+        if (dataIndex++ != cardIndex) {
+          return;
+        }
 
-    if (dataIndex++ != cardIndex) {
-      return;
-    }
+        std::string key;
+        if (idColumn >= 0 && idColumn < static_cast<int>(row.size())) {
+          trimAsciiInPlace(row[idColumn]);
+          key = row[idColumn];
+        }
+        if (key.empty()) {
+          key = fnv1aCardKey(row[frontColumn], row[backColumn]);
+        }
 
-    std::string key;
-    if (idColumn >= 0 && idColumn < static_cast<int>(row.size())) {
-      trimAsciiInPlace(row[idColumn]);
-      key = row[idColumn];
-    }
-    if (key.empty()) {
-      key = fnv1aCardKey(row[frontColumn], row[backColumn]);
-    }
-
-    card.key = std::move(key);
-    card.front = std::move(row[frontColumn]);
-    card.back = std::move(row[backColumn]);
-    found = true;
-    stopRequested = true;
-  }, error, &stopRequested);
+        card.key = std::move(key);
+        card.front = std::move(row[frontColumn]);
+        card.back = std::move(row[backColumn]);
+        found = true;
+        stopRequested = true;
+      },
+      error, &stopRequested);
   file.close();
 
   if (!parsedOk) {
@@ -827,6 +826,12 @@ bool FlashcardsStore::loadDeckProgress(const FlashcardDeck& deck, std::vector<Fl
   JsonDocument doc;
   std::vector<FlashcardCardProgress> saved;
   const std::string statePath = getStatePath(deck.deckId);
+  const std::string previousPath = statePath + ".previous";
+  if (!AtomicFileReplace::recover(Storage, statePath.c_str(), previousPath.c_str()) &&
+      Storage.exists(previousPath.c_str())) {
+    if (error) *error = "Could not recover saved progress";
+    return false;
+  }
   bool canLoadSavedProgress = true;
   if (Storage.exists(statePath.c_str())) {
     HalFile stateFile;
@@ -839,12 +844,22 @@ bool FlashcardsStore::loadDeckProgress(const FlashcardDeck& deck, std::vector<Fl
     }
   }
 
-  if (canLoadSavedProgress && loadJsonDocumentFromFile("FCS", statePath.c_str(), doc)) {
+  const bool hasSavedProgress = Storage.exists(statePath.c_str()) || Storage.exists(previousPath.c_str());
+  bool loadedSavedProgress = canLoadSavedProgress && Storage.exists(statePath.c_str()) &&
+                             loadJsonDocumentFromFile("FCS", statePath.c_str(), doc);
+  if (!loadedSavedProgress && canLoadSavedProgress && Storage.exists(previousPath.c_str())) {
+    loadedSavedProgress = loadJsonDocumentFromFile("FCS", previousPath.c_str(), doc);
+  }
+  if (hasSavedProgress && !loadedSavedProgress) {
+    if (error) *error = "Could not read saved progress";
+    return false;
+  }
+
+  if (loadedSavedProgress) {
     JsonArray cards = doc["cards"].as<JsonArray>();
     const size_t savedReserve = std::min(static_cast<size_t>(cards.size()), deck.cards.size());
     if (savedReserve > 0) {
-      if (!hasFlashcardAllocationHeadroom("saved-progress-reserve",
-                                          savedReserve * sizeof(FlashcardCardProgress))) {
+      if (!hasFlashcardAllocationHeadroom("saved-progress-reserve", savedReserve * sizeof(FlashcardCardProgress))) {
         setDeckTooLargeError(error);
         return false;
       }

@@ -10,6 +10,7 @@
 #include <string>
 
 #include "fontIds.h"
+#include "util/BookIdentity.h"
 
 // Initialize the static instance
 CrossPointSettings CrossPointSettings::instance;
@@ -98,11 +99,61 @@ void CrossPointSettings::validateFrontButtonMapping(CrossPointSettings& settings
 }
 
 bool CrossPointSettings::saveToFile() const {
+  if (!globalSettingsReadable) return false;
   Storage.mkdir("/.crosspoint");
-  return JsonSettingsIO::saveSettings(*this, SETTINGS_FILE_JSON);
+  const bool bookSaved =
+      !usesBookReaderSettings() ||
+      (bookReaderSettingsReadable &&
+       JsonSettingsIO::saveBookReaderSettings(ReaderPreferences::capture(*this), true, bookReaderSettingsPath.c_str()));
+  const bool globalsSaved = JsonSettingsIO::saveSettings(*this, SETTINGS_FILE_JSON);
+  return bookSaved && globalsSaved;
+}
+
+void CrossPointSettings::beginBookReaderSettings(const std::string& bookId) {
+  endBookReaderSettings();
+  if (bookId.empty()) return;
+  BookIdentity::ensureStableDataDir(bookId);
+  bookReaderSettingsPath = BookIdentity::getStableDataFilePath(bookId, "reader-settings.json");
+  bookReaderSettingsReadable = true;
+  const bool recovered = JsonSettingsIO::recoverFile(bookReaderSettingsPath.c_str());
+  if (!Storage.exists(bookReaderSettingsPath.c_str())) {
+    bookReaderSettingsReadable = recovered || !Storage.exists((bookReaderSettingsPath + ".previous").c_str());
+    return;
+  }
+  ReaderPreferences preferences = ReaderPreferences::capture(*this);
+  bool enabled = false;
+  bookReaderSettingsReadable =
+      JsonSettingsIO::loadBookReaderSettings(preferences, enabled, bookReaderSettingsPath.c_str());
+  if (bookReaderSettingsReadable && enabled) readerPreferenceScope.begin(*this, preferences);
+}
+
+void CrossPointSettings::endBookReaderSettings() {
+  readerPreferenceScope.end(*this);
+  bookReaderSettingsPath.clear();
+  bookReaderSettingsReadable = true;
+}
+
+bool CrossPointSettings::setBookReaderSettingsEnabled(const bool enabled) {
+  if (bookReaderSettingsPath.empty() || !bookReaderSettingsReadable) return false;
+  if (enabled == usesBookReaderSettings()) return true;
+  // Write first. A full/removed SD cannot turn a temporary in-memory choice into
+  // the loss of an existing book profile or a change to the global defaults.
+  const ReaderPreferences preferences = enabled ? ReaderPreferences::capture(*this) : persistedReaderPreferences();
+  if (!JsonSettingsIO::saveBookReaderSettings(preferences, enabled, bookReaderSettingsPath.c_str())) return false;
+  if (enabled)
+    readerPreferenceScope.begin(*this, preferences);
+  else
+    readerPreferenceScope.end(*this);
+  return true;
 }
 
 bool CrossPointSettings::loadFromFile() {
+  globalSettingsReadable = true;
+  if (!JsonSettingsIO::recoverFile(SETTINGS_FILE_JSON) &&
+      Storage.exists((std::string(SETTINGS_FILE_JSON) + ".previous").c_str())) {
+    globalSettingsReadable = false;
+    return false;
+  }
   const std::string tempPath = std::string(SETTINGS_FILE_JSON) + ".tmp";
   if (!Storage.exists(SETTINGS_FILE_JSON) && Storage.exists(tempPath.c_str())) {
     if (Storage.rename(tempPath.c_str(), SETTINGS_FILE_JSON)) {
@@ -116,6 +167,7 @@ bool CrossPointSettings::loadFromFile() {
     if (!json.isEmpty()) {
       bool resave = false;
       bool result = JsonSettingsIO::loadSettings(*this, json.c_str(), &resave);
+      globalSettingsReadable = result;
       if (result && resave) {
         if (saveToFile()) {
           LOG_DBG("CPS", "Resaved settings to update format");
@@ -125,6 +177,8 @@ bool CrossPointSettings::loadFromFile() {
       }
       return result;
     }
+    globalSettingsReadable = false;
+    return false;
   }
 
   // Fall back to binary migration

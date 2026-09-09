@@ -377,6 +377,8 @@ void BookMetadataCache::createTocEntry(const std::string& title, const std::stri
 /* ============= READING / LOADING FUNCTIONS ================ */
 
 bool BookMetadataCache::load() {
+  loaded = false;
+  cumulativeSizes.clear();
   if (!Storage.openFileForRead("BMC", cachePath + bookBinFile, bookFile)) {
     return false;
   }
@@ -400,15 +402,15 @@ bool BookMetadataCache::load() {
   serialization::readString(bookFile, coreMetadata.coverItemHref);
   serialization::readString(bookFile, coreMetadata.textReferenceHref);
 
-  cumulativeSizes.clear();
-  cumulativeSizes.reserve(spineCount);
-  for (uint16_t i = 0; i < spineCount; ++i) {
-    bookFile.seek(lutOffset + sizeof(uint32_t) * i);
-    uint32_t spineEntryPos = 0;
-    serialization::readPod(bookFile, spineEntryPos);
-    bookFile.seek(spineEntryPos);
-    cumulativeSizes.push_back(readSpineEntry(bookFile).cumulativeSize);
+  const uint64_t lutEnd =
+      static_cast<uint64_t>(lutOffset) + (static_cast<uint64_t>(spineCount) + tocCount) * sizeof(uint32_t);
+  if (lutOffset < bookFile.position() || lutEnd > bookFile.fileSize64()) {
+    bookFile.close();
+    LOG_ERR("BMC", "Truncated or invalid metadata LUT");
+    return false;
   }
+  // Metadata-only users allocate nothing. The first progress request may cache
+  // up to 1024 entries (4 KiB), otherwise it reads the requested value from SD.
 
   loaded = true;
   LOG_DBG("BMC", "Loaded cache data: %d spine, %d TOC entries", spineCount, tocCount);
@@ -416,8 +418,20 @@ bool BookMetadataCache::load() {
 }
 
 uint32_t BookMetadataCache::getCumulativeSize(const int index) const {
-  if (index < 0 || index >= static_cast<int>(cumulativeSizes.size())) return 0;
-  return cumulativeSizes[index];
+  if (!loaded || index < 0 || index >= spineCount) return 0;
+  const uint64_t firstEntry =
+      static_cast<uint64_t>(lutOffset) + (static_cast<uint64_t>(spineCount) + tocCount) * sizeof(uint32_t);
+  uint32_t value = 0;
+  if (!cumulativeSizes.get(
+          static_cast<size_t>(index), spineCount,
+          [this, firstEntry](size_t item, uint32_t& size) {
+            return readCumulativeSizeFromLut(bookFile, lutOffset, item, firstEntry, size);
+          },
+          value)) {
+    LOG_ERR("BMC", "Could not read cumulative size for spine %d", index);
+    return 0;
+  }
+  return value;
 }
 
 BookMetadataCache::SpineEntry BookMetadataCache::getSpineEntry(const int index) {

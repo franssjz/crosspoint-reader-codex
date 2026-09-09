@@ -33,7 +33,9 @@
 class CssParser {
  public:
   // Bump when CSS cache format or rules change; section caches are invalidated when this changes
-  static constexpr uint8_t CSS_CACHE_VERSION = 6;
+  // v7 rejects legacy v6 caches that may have persisted only a stylesheet
+  // prefix after a memory/read failure. The serialized field layout is unchanged.
+  static constexpr uint8_t CSS_CACHE_VERSION = 8;
 
   explicit CssParser(std::string cachePath) : cachePath(std::move(cachePath)) {}
   ~CssParser() = default;
@@ -80,7 +82,15 @@ class CssParser {
   /**
    * Clear all loaded rules
    */
-  void clear() { rulesBySelector_.clear(); }
+  void clear() {
+    rulesBySelector_.clear();
+    cacheLoadIncomplete_ = false;
+  }
+
+  // The caller must mark skipped/failed stylesheets too. A usable prefix of
+  // rules is a session fallback, never a complete persistent CSS cache.
+  void markIncomplete() { sourceIncomplete_ = true; }
+  bool isComplete() const { return !sourceIncomplete_ && !cacheLoadIncomplete_; }
 
   /**
    * Check if CSS rules cache file exists
@@ -141,6 +151,8 @@ class CssParser {
   std::unordered_map<std::string, CssStyle, SvHash, SvEqual> rulesBySelector_;
 
   std::string cachePath;
+  bool sourceIncomplete_ = false;
+  bool cacheLoadIncomplete_ = false;
 
   // Internal parsing helpers
   void processRuleBlockWithStyle(std::string_view selectorGroup, const CssStyle& style);
@@ -151,6 +163,7 @@ class CssParser {
   static CssTextAlign interpretAlignment(std::string_view val);
   static CssFontStyle interpretFontStyle(std::string_view val);
   static CssFontWeight interpretFontWeight(std::string_view val);
+  static CssFontVariantCaps interpretFontVariantCaps(std::string_view val);
   static CssTextDecoration interpretDecoration(std::string_view val);
   static CssLength interpretLength(std::string_view val);
   /** Returns true only when a numeric length was parsed (e.g. 2em, 50%). False for auto/inherit/initial. */

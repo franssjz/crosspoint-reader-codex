@@ -11,9 +11,11 @@
 #include <cstddef>
 
 #include "MappedInputManager.h"
+#include "NearbyTransferActivity.h"
 #include "NetworkModeSelectionActivity.h"
 #include "SilentRestart.h"
 #include "WifiSelectionActivity.h"
+#include "activities/home/FileBrowserActivity.h"
 #include "activities/network/CalibreConnectActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -120,6 +122,52 @@ void CrossPointWebServerActivity::onExit() {
 }
 
 void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) {
+  if (mode == NetworkMode::RECEIVE_NEARBY || mode == NetworkMode::SEND_NEARBY) {
+    const auto returnToModes = [this](const ActivityResult&) {
+      state = WebServerActivityState::MODE_SELECTION;
+      startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
+                             [this](const ActivityResult& result) {
+                               if (result.isCancelled)
+                                 onGoHome();
+                               else
+                                 onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
+                             });
+    };
+    if (mode == NetworkMode::RECEIVE_NEARBY) {
+      auto nearby =
+          makeUniqueNoThrow<NearbyTransferActivity>(renderer, mappedInput, NearbyTransferActivity::Mode::ReceiveFile);
+      if (!nearby) {
+        LOG_ERR("WEBACT", "Insufficient heap for nearby transfer");
+        returnToModes(ActivityResult{});
+        return;
+      }
+      startActivityForResult(std::move(nearby), returnToModes);
+    } else {
+      auto picker =
+          makeUniqueNoThrow<FileBrowserActivity>(renderer, mappedInput, "/", FileBrowserActivity::Mode::PickFile);
+      if (!picker) {
+        LOG_ERR("WEBACT", "Insufficient heap for nearby file selection");
+        returnToModes(ActivityResult{});
+        return;
+      }
+      startActivityForResult(std::move(picker), [this, returnToModes](const ActivityResult& result) {
+        const auto* selected = std::get_if<FilePathResult>(&result.data);
+        if (result.isCancelled || !selected) {
+          returnToModes(result);
+          return;
+        }
+        auto nearby = makeUniqueNoThrow<NearbyTransferActivity>(renderer, mappedInput,
+                                                                NearbyTransferActivity::Mode::SendFile, selected->path);
+        if (!nearby) {
+          LOG_ERR("WEBACT", "Insufficient heap for nearby transfer");
+          returnToModes(result);
+          return;
+        }
+        startActivityForResult(std::move(nearby), returnToModes);
+      });
+    }
+    return;
+  }
   const char* modeName = "Join Network";
   if (mode == NetworkMode::CONNECT_CALIBRE) {
     modeName = "Connect to Calibre";

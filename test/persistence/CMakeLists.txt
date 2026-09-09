@@ -1,0 +1,3 @@
+add_executable(persistence_test AtomicFileReplaceTest.cpp ReaderPreferencesTest.cpp)
+target_link_libraries(persistence_test PRIVATE crosspoint_test_common GTest::gtest_main)
+gtest_discover_tests(persistence_test)

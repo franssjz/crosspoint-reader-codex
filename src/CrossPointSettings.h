@@ -4,6 +4,9 @@
 
 #include <cstdint>
 #include <iosfwd>
+#include <string>
+
+#include "util/ReaderPreferences.h"
 
 class CrossPointSettings {
  private:
@@ -173,6 +176,7 @@ class CrossPointSettings {
     PAGE_TURN = 2,
     FORCE_REFRESH = 3,
     TOGGLE_STATUS_BAR = 4,
+    QUICK_LOCK = 5,
     SHORT_PWRBTN_COUNT
   };
   enum TILT_PAGE_TURN { TILT_OFF = 0, TILT_NORMAL = 1, TILT_INVERTED = 2, TILT_PAGE_TURN_COUNT };
@@ -284,6 +288,8 @@ class CrossPointSettings {
   uint8_t textDarkness = TEXT_DARKNESS_NORMAL;
   // Short power button click behaviour
   uint8_t shortPwrBtn = IGNORE;
+  // Bits: QWERTY, AZERTY, QWERTZ, Spanish, Cyrillic, Hebrew. Legacy default stays QWERTY.
+  uint8_t keyboardLayouts = 1;
   // Tilt-based page turning (X3 only, requires QMI8658 IMU)
   uint8_t tiltPageTurn = TILT_OFF;
   // EPUB reading orientation settings
@@ -303,6 +309,8 @@ class CrossPointSettings {
   uint8_t fontFamily = BOOKERLY;
   uint8_t fontSize = MEDIUM;
   uint8_t lineSpacing = NORMAL;
+  // 0 preserves the layout used by every previous CPR-vCodex release.
+  uint8_t wordSpacing = 0;
   uint8_t paragraphAlignment = JUSTIFIED;
   // Auto-sleep timeout setting (default 10 minutes)
   uint8_t sleepTimeout = SLEEP_10_MIN;
@@ -420,6 +428,7 @@ class CrossPointSettings {
   uint8_t hideFileExtension = 0;
   // Image rendering mode in EPUB reader
   uint8_t imageRendering = IMAGES_DISPLAY;
+  uint8_t readerAutoPageTurn = 0;
 
   ~CrossPointSettings() = default;
 
@@ -441,10 +450,21 @@ class CrossPointSettings {
   bool saveToFile() const;
   bool loadFromFile();
 
+  void beginBookReaderSettings(const std::string& bookId);
+  void endBookReaderSettings();
+  bool setBookReaderSettingsEnabled(bool enabled);
+  bool hasBookReaderSettingsContext() const { return !bookReaderSettingsPath.empty(); }
+  bool usesBookReaderSettings() const { return readerPreferenceScope.isActive(); }
+  ReaderPreferences persistedReaderPreferences() const { return readerPreferenceScope.persisted(*this); }
+
   static void validateFrontButtonMapping(CrossPointSettings& settings);
 
  private:
   bool loadFromBinaryFile();
+  ReaderPreferenceScope readerPreferenceScope;
+  std::string bookReaderSettingsPath;
+  bool bookReaderSettingsReadable = true;
+  bool globalSettingsReadable = true;
 
  public:
   float getReaderLineCompression() const;

@@ -7,6 +7,7 @@
 struct ReaderRenderSpec {
   int fontId = 0;
   float lineCompression = 1.0f;
+  uint8_t wordSpacing = 0;
   bool extraParagraphSpacing = false;
   bool forceParagraphIndents = false;
   uint8_t paragraphAlignment = 0;

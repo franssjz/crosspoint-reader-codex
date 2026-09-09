@@ -113,8 +113,7 @@ void TextBlock::bindArenaPointers() {
 TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& wordXpos,
                      const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
                      const std::vector<uint16_t>& focusSuffixX, const std::vector<uint8_t>& layoutFlags,
-                     const BlockStyle& style,
-                     const std::vector<std::string>& rubyTexts)
+                     const BlockStyle& style, const std::vector<std::string>& rubyTexts)
     : blockStyle(style) {
   const bool hasFocus = !focusBoundary.empty();
   const bool hasRuby = std::any_of(rubyTexts.begin(), rubyTexts.end(), [](const std::string& s) { return !s.empty(); });
@@ -123,8 +122,7 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   if (words.size() != wordXpos.size() || words.size() != wordStyles.size() ||
       words.size() > MAX_SERIALIZED_LINE_WORDS ||
       (hasFocus && (words.size() != focusBoundary.size() || words.size() != focusSuffixX.size())) ||
-      (!layoutFlags.empty() && words.size() != layoutFlags.size()) ||
-      (hasRuby && rubyTexts.size() != words.size())) {
+      (!layoutFlags.empty() && words.size() != layoutFlags.size()) || (hasRuby && rubyTexts.size() != words.size())) {
     LOG_ERR("TXB", "Construction failed: inconsistent word arrays");
     isValid = false;
     return;
@@ -202,7 +200,7 @@ void TextBlock::recordFontUsage(FontCacheManager& fontCacheManager, const int fo
     const EpdFontFamily::Style style = wordStyle(i);
     fontCacheManager.recordText(wordText(i), fontId, style);
     if (bionicReadingMode == BIONIC_READING_NORMAL && (style & EpdFontFamily::BOLD) == 0) {
-      fontCacheManager.recordStyle(fontId, static_cast<EpdFontFamily::Style>(style | EpdFontFamily::BOLD));
+      fontCacheManager.recordText(wordText(i), fontId, static_cast<EpdFontFamily::Style>(style | EpdFontFamily::BOLD));
     }
     if (rubyText(i)[0] != '\0') {
       fontCacheManager.recordText(rubyText(i), fontId, EpdFontFamily::SUP);

@@ -491,6 +491,10 @@ void TxtReaderActivity::initializeReader() {
 
   // Load saved progress
   loadProgress();
+  if (progressPersistenceBlocked) {
+    activityManager.goToFullScreenMessage(tr(STR_PAGE_LOAD_ERROR));
+    return;
+  }
 
   initialized = true;
 }
@@ -805,6 +809,7 @@ void TxtReaderActivity::renderStatusBar() const {
 }
 
 void TxtReaderActivity::saveProgress() const {
+  if (progressPersistenceBlocked) return;
   const uint8_t progressPercent =
       totalPages > 0 ? static_cast<uint8_t>(std::min(100, ((currentPage + 1) * 100) / totalPages)) : 0;
   READING_STATS.updateProgress(progressPercent, totalPages > 0 && currentPage + 1 >= totalPages, "", progressPercent);
@@ -828,15 +833,21 @@ void TxtReaderActivity::loadProgress() {
   bool loadedFromLegacy = false;
   const std::string stableProgressPath = getStableProgressPath(stableBookId);
   const std::string legacyProgressPath = getLegacyProgressPath(*txt);
+  progressPersistenceBlocked = !ProgressFile::recover(stableProgressPath);
+  if (!progressPersistenceBlocked && (stableProgressPath.empty() || !Storage.exists(stableProgressPath.c_str()))) {
+    progressPersistenceBlocked = !ProgressFile::recover(legacyProgressPath);
+  }
   const std::string progressPath = (!stableProgressPath.empty() && Storage.exists(stableProgressPath.c_str()))
                                        ? stableProgressPath
                                        : legacyProgressPath;
   if (progressPath == legacyProgressPath) {
     loadedFromLegacy = !stableProgressPath.empty() && Storage.exists(legacyProgressPath.c_str());
   }
-  if (Storage.openFileForRead("TRS", progressPath, f)) {
+  if (!progressPersistenceBlocked && Storage.openFileForRead("TRS", progressPath, f)) {
     uint8_t data[4];
-    if (f.read(data, 4) == 4) {
+    const int readSize = f.read(data, 4);
+    progressPersistenceBlocked = readSize != 4;
+    if (!progressPersistenceBlocked) {
       currentPage = data[0] + (data[1] << 8);
       if (currentPage >= totalPages) {
         currentPage = totalPages - 1;
@@ -847,9 +858,11 @@ void TxtReaderActivity::loadProgress() {
       LOG_DBG("TRS", "Loaded progress: page %d/%d", currentPage, totalPages);
     }
     f.close();
-    if (loadedFromLegacy) {
+    if (loadedFromLegacy && !progressPersistenceBlocked) {
       saveProgress();
     }
+  } else if (Storage.exists(progressPath.c_str())) {
+    progressPersistenceBlocked = true;
   }
 }
 

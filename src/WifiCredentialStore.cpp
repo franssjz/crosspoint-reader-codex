@@ -47,6 +47,7 @@ bool WifiCredentialStore::saveToFileUnlocked() const {
 
 bool WifiCredentialStore::loadFromFile() {
   std::lock_guard<std::mutex> lock(persistenceMutex);
+  JsonSettingsIO::recoverFile(WIFI_FILE_JSON);
   const std::string tempPath = std::string(WIFI_FILE_JSON) + ".tmp";
   if (!Storage.exists(WIFI_FILE_JSON) && Storage.exists(tempPath.c_str())) {
     if (Storage.rename(tempPath.c_str(), WIFI_FILE_JSON)) {

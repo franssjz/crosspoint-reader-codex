@@ -7,12 +7,8 @@
 #include <utility>
 
 #include "../Activity.h"
+#include "KeyboardLayoutSet.h"
 #include "util/ButtonNavigator.h"
-
-struct KeyDef {
-  char primary;
-  char secondary;
-};
 
 enum class SpecialKeyType { Shift, Mode, Space, Del, Ok };
 
@@ -30,9 +26,8 @@ class KeyboardEntryActivity : public Activity {
         inputType(inputType) {}
 
   // Backward-compatible constructor for older callers still using isPassword.
-  explicit KeyboardEntryActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                 std::string title, std::string initialText, const size_t maxLength,
-                                 const bool isPassword)
+  explicit KeyboardEntryActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string title,
+                                 std::string initialText, const size_t maxLength, const bool isPassword)
       : KeyboardEntryActivity(renderer, mappedInput, std::move(title), std::move(initialText), maxLength,
                               isPassword ? InputType::Password : InputType::Text) {}
 
@@ -54,6 +49,8 @@ class KeyboardEntryActivity : public Activity {
   int selectedRow = 0;
   int selectedCol = 0;
   int shiftState = 0;
+  uint8_t layoutId = KeyboardLayoutSet::Qwerty;
+  uint8_t enabledLayouts = 1;
   bool symMode = false;
   bool confirmHeld = false;
   bool confirmLongHandled = false;
@@ -225,10 +222,11 @@ class KeyboardEntryActivity : public Activity {
   int getContentColCount() const;
   int getTotalRowCount() const;
   bool isBottomRow(int row) const;
-  char getSelectedChar() const;
-  char getAlternativeChar() const;
+  KeyDef getKey(int row, int column) const;
+  uint32_t getSelectedChar() const;
+  uint32_t getAlternativeChar() const;
   bool handleKeyPress();
-  bool insertChar(char c);
+  bool insertChar(uint32_t c);
   void insertString(const std::string& str);
   void mapColContentBottom(int& col, bool goingUp) const;
 };

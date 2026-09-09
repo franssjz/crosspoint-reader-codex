@@ -4,22 +4,29 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "../Activity.h"
+#include "SelectionPageStepper.h"
 
 class DictionaryWordSelectActivity final : public Activity {
  public:
+  using PageLoader = std::function<SelectionPageResult(SelectionPageRequest)>;
   DictionaryWordSelectActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::shared_ptr<Page> page,
-                               int readerFontId, int marginLeft, int marginTop, bool highlightPhraseMode = false)
+                               int readerFontId, int marginLeft, int marginTop, bool highlightPhraseMode = false,
+                               PageLoader pageLoader = {}, uint16_t spine = 0, uint16_t pageIndex = 0)
       : Activity("DictionaryWordSelect", renderer, mappedInput),
         page(std::move(page)),
         readerFontId(readerFontId),
         marginLeft(marginLeft),
         marginTop(marginTop),
-        highlightPhraseMode(highlightPhraseMode) {}
+        highlightPhraseMode(highlightPhraseMode),
+        pageLoader(std::move(pageLoader)),
+        selectionSpine(spine),
+        selectionPage(pageIndex) {}
 
   void onEnter() override;
   void onExit() override;
@@ -37,6 +44,7 @@ class DictionaryWordSelectActivity final : public Activity {
     int16_t row = 0;
     int continuationIndex = -1;
     int continuationOf = -1;
+    uint16_t flow = 0;
   };
 
   struct Row {
@@ -71,6 +79,22 @@ class DictionaryWordSelectActivity final : public Activity {
   int currentWordInRow = 0;
   int anchorWordIndex = -1;
   bool highlightPhraseMode = false;
+  PageLoader pageLoader;
+  uint16_t selectionSpine = 0;
+  uint16_t selectionPage = 0;
+  int pendingPageDirection = 0;
+  int selectionDirection = 0;
+  bool selectionPageError = false;
+  struct SavedFragment {
+    HighlightFragment fragment;
+    int anchor;
+  };
+  std::vector<SavedFragment> selectedFragments;
+  static constexpr size_t MAX_SELECTION_PAGES = 4;
+  void stepSelectionPage(int direction);
+  void acceptSelectionPage(SelectionPageResult result);
+  HighlightFragment makeSelectionFragment(int from, int to) const;
+  bool selectionFits(int from, int to) const;
   SelectionRegionCache selectionRegions[MAX_SELECTION_REGIONS];
   size_t selectionRegionCount = 0;
 

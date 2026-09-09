@@ -546,6 +546,7 @@ bool AchievementsStore::saveToFile() const {
 }
 
 bool AchievementsStore::loadFromFile() {
+  JsonSettingsIO::recoverFile(ACHIEVEMENTS_FILE_JSON);
   const std::string tempPath = std::string(ACHIEVEMENTS_FILE_JSON) + ".tmp";
   if (!Storage.exists(ACHIEVEMENTS_FILE_JSON) && Storage.exists(tempPath.c_str())) {
     if (Storage.rename(tempPath.c_str(), ACHIEVEMENTS_FILE_JSON)) {

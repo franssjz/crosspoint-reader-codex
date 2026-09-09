@@ -4,6 +4,7 @@
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
 #include <I18n.h>
+#include <Utf8.h>
 
 #include <algorithm>
 #include <climits>
@@ -60,35 +61,27 @@ void DictionaryWordSelectActivity::extractWords() {
 
   prepareReaderFontMetrics();
 
-  for (const auto& element : page->elements) {
-    if (!element || element->getTag() != TAG_PageLine) continue;
-    const auto& line = static_cast<const PageLine&>(*element);
-    const auto& block = line.getBlock();
-    if (!block) continue;
-
-    const int rubyShift = block->getRubyShift(renderer.getFontAscenderSize(readerFontId));
-    const size_t count = block->wordCount();
-    for (size_t i = 0; i < count; ++i) {
-      const std::string word = block->wordText(i);
+  page->forEachTextLine([&](const TextBlock& block, const int lineX, const int lineY, const uint16_t flow) {
+    const int rubyShift = block.getRubyShift(renderer.getFontAscenderSize(readerFontId));
+    for (size_t i = 0; i < block.wordCount(); ++i) {
+      const std::string word = block.wordText(i);
       const std::string cleaned = highlightPhraseMode ? visibleHighlightWord(word) : DictionaryStore::cleanWord(word);
       if (cleaned.find_first_not_of(" \t\r\n") == std::string::npos) continue;
-      const int16_t x = static_cast<int16_t>(line.xPos + block->wordXpos(i) + marginLeft);
-      const int16_t y = static_cast<int16_t>(line.yPos + marginTop + rubyShift);
-      const int16_t width = static_cast<int16_t>(std::max(1, measureWordWidth(word.c_str())));
-      words.push_back(WordInfo{word, cleaned, x, y, width, 0});
+      const int16_t x = static_cast<int16_t>(lineX + block.wordXpos(i) + marginLeft);
+      const int16_t y = static_cast<int16_t>(lineY + marginTop + rubyShift);
+      const auto style = block.wordStyle(i);
+      const int16_t width =
+          static_cast<int16_t>(std::max(1, renderer.getTextAdvanceX(readerFontId, word.c_str(), style)));
+      words.push_back(WordInfo{word, cleaned, x, y, width, 0, -1, -1, flow});
     }
-  }
-
-  if (words.empty()) return;
-  std::sort(words.begin(), words.end(), [](const WordInfo& a, const WordInfo& b) {
-    if (std::abs(a.screenY - b.screenY) > 2) return a.screenY < b.screenY;
-    return a.screenX < b.screenX;
+    return true;
   });
 
+  if (words.empty()) return;
   int16_t currentY = words[0].screenY;
   rows.push_back(Row{currentY, {}});
   for (size_t i = 0; i < words.size(); ++i) {
-    if (std::abs(words[i].screenY - currentY) > 2) {
+    if (std::abs(words[i].screenY - currentY) > 2 || (i > 0 && words[i].flow != words[i - 1].flow)) {
       currentY = words[i].screenY;
       rows.push_back(Row{currentY, {}});
     }
@@ -100,22 +93,10 @@ void DictionaryWordSelectActivity::extractWords() {
 void DictionaryWordSelectActivity::prepareReaderFontMetrics() {
   if (!page || !renderer.isSdCardFont(readerFontId)) return;
 
-  std::string pageText;
-  pageText.reserve(2048);
-  for (const auto& element : page->elements) {
-    if (!element || element->getTag() != TAG_PageLine) continue;
-    const auto& line = static_cast<const PageLine&>(*element);
-    const auto& block = line.getBlock();
-    if (!block) continue;
-
-    for (uint16_t i = 0; i < block->wordCount(); ++i) {
-      if (!pageText.empty()) pageText.push_back(' ');
-      pageText += block->wordText(i);
-    }
-  }
-
-  if (!pageText.empty()) {
-    renderer.ensureSdCardFontReady(readerFontId, pageText.c_str(), 0x01);
+  if (auto* manager = renderer.getFontCacheManager()) {
+    auto scope = manager->createPrewarmScope();
+    page->recordFontUsage(*manager, readerFontId, SETTINGS.bionicReading);
+    scope.endScanAndPrewarm();
   }
 }
 
@@ -129,6 +110,7 @@ void DictionaryWordSelectActivity::mergeHyphenatedWords() {
 
     const int lastIndex = rows[rowIndex].wordIndices.back();
     const int nextIndex = rows[rowIndex + 1].wordIndices.front();
+    if (words[lastIndex].flow != words[nextIndex].flow) continue;
     const std::string& raw = words[lastIndex].text;
     if (raw.empty()) continue;
 
@@ -399,6 +381,98 @@ std::string DictionaryWordSelectActivity::buildSelectedText(const int from, cons
   return text;
 }
 
+HighlightFragment DictionaryWordSelectActivity::makeSelectionFragment(const int from, const int to) const {
+  HighlightFragment fragment;
+  fragment.text = buildSelectedText(from, to);
+  fragment.text.resize(utf8SafeTruncateBuffer(fragment.text.data(), static_cast<int>(fragment.text.size())));
+  fragment.spineIndex = selectionSpine;
+  fragment.pageNumber = selectionPage;
+  fragment.startWordIndex = static_cast<uint16_t>(from);
+  fragment.endWordIndex = static_cast<uint16_t>(to);
+  fragment.visibleTextOffset = page ? page->visibleTextOffset : 0;
+  return fragment;
+}
+
+bool DictionaryWordSelectActivity::selectionFits(int from, int to) const {
+  size_t bytes = 0;
+  for (int i = from; i <= to; ++i) {
+    const auto word = visibleHighlightWord(words[i].text);
+    const auto first = word.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) continue;
+    const auto last = word.find_last_not_of(" \t\r\n");
+    bytes += last - first + 1 + (bytes ? 1 : 0);
+    if (bytes > 512) return false;
+  }
+  return true;
+}
+
+void DictionaryWordSelectActivity::stepSelectionPage(const int direction) {
+  if (!pageLoader || pendingPageDirection != 0) return;
+  RenderLock lock(*this);
+  if (anchorWordIndex >= 0 && selectedFragments.size() + 1 >= MAX_SELECTION_PAGES && direction == selectionDirection) {
+    GUI.drawPopup(renderer, tr(STR_HIGHLIGHT_FAILED));
+    renderer.displayBuffer();
+    return;
+  }
+  if (anchorWordIndex >= 0 && !words.empty() && (selectedFragments.empty() || direction == selectionDirection) &&
+      !selectionFits(direction > 0 ? anchorWordIndex : 0,
+                     direction > 0 ? static_cast<int>(words.size()) - 1 : anchorWordIndex)) {
+    GUI.drawPopup(renderer, tr(STR_HIGHLIGHT_FAILED));
+    renderer.displayBuffer();
+    return;
+  }
+  selectionPageError = false;
+  pendingPageDirection = direction;
+  requestUpdate();
+  acceptSelectionPage(pageLoader(direction > 0 ? SelectionPageRequest::Next : SelectionPageRequest::Previous));
+}
+
+void DictionaryWordSelectActivity::acceptSelectionPage(SelectionPageResult result) {
+  using Status = SelectionPageResult::Status;
+  if (result.status == Status::Pending) return;
+  const int direction = pendingPageDirection;
+  pendingPageDirection = 0;
+  if (result.status != Status::Ready || !result.page) {
+    selectionPageError = result.status == Status::Error;
+    requestUpdate();
+    return;
+  }
+  int restoredAnchor = -1;
+  if (anchorWordIndex >= 0 && !words.empty()) {
+    const bool returning = !selectedFragments.empty() && selectedFragments.back().fragment.spineIndex == result.spine &&
+                           selectedFragments.back().fragment.pageNumber == result.pageIndex;
+    if (returning) {
+      restoredAnchor = selectedFragments.back().anchor;
+      selectedFragments.pop_back();
+      if (selectedFragments.empty()) selectionDirection = 0;
+    } else {
+      if (selectedFragments.empty()) selectionDirection = direction;
+      const int from = direction > 0 ? anchorWordIndex : 0;
+      const int to = direction > 0 ? static_cast<int>(words.size()) - 1 : anchorWordIndex;
+      selectedFragments.push_back({makeSelectionFragment(from, to), anchorWordIndex});
+    }
+  }
+  const bool continuing = anchorWordIndex >= 0;
+  freeSelectionRegionCache();
+  page = std::move(result.page);
+  selectionSpine = result.spine;
+  selectionPage = result.pageIndex;
+  extractWords();
+  mergeHyphenatedWords();
+  currentRow = direction > 0 || rows.empty() ? 0 : static_cast<int>(rows.size()) - 1;
+  currentWordInRow = direction > 0 || rows.empty() ? 0 : static_cast<int>(rows.back().wordIndices.size()) - 1;
+  anchorWordIndex = continuing ? (restoredAnchor >= 0 ? restoredAnchor
+                                  : direction > 0     ? 0
+                                                      : std::max(0, static_cast<int>(words.size()) - 1))
+                               : -1;
+  if (restoredAnchor >= 0 && restoredAnchor < static_cast<int>(words.size())) {
+    currentRow = words[restoredAnchor].row;
+    const auto& indices = rows[currentRow].wordIndices;
+    currentWordInRow = static_cast<int>(std::find(indices.begin(), indices.end(), restoredAnchor) - indices.begin());
+  }
+  requestUpdate();
+}
+
 void DictionaryWordSelectActivity::confirmHighlightSelection() {
   const int wordIndex = selectedWordIndex();
   if (wordIndex < 0) return;
@@ -410,7 +484,23 @@ void DictionaryWordSelectActivity::confirmHighlightSelection() {
 
   const int from = std::min(anchorWordIndex, wordIndex);
   const int to = std::max(anchorWordIndex, wordIndex);
-  setResult(HighlightResult{buildSelectedText(from, to), static_cast<uint16_t>(from), static_cast<uint16_t>(to)});
+  if (!selectionFits(from, to)) {
+    RenderLock lock(*this);
+    GUI.drawPopup(renderer, tr(STR_HIGHLIGHT_FAILED));
+    renderer.displayBuffer();
+    return;
+  }
+  HighlightResult result{buildSelectedText(from, to), static_cast<uint16_t>(from), static_cast<uint16_t>(to)};
+  if (pageLoader) {
+    result.fragments.reserve(selectedFragments.size() + 1);
+    for (auto& saved : selectedFragments) result.fragments.push_back(std::move(saved.fragment));
+    result.fragments.push_back(makeSelectionFragment(from, to));
+    std::sort(result.fragments.begin(), result.fragments.end(),
+              [](const HighlightFragment& a, const HighlightFragment& b) {
+                return a.spineIndex != b.spineIndex ? a.spineIndex < b.spineIndex : a.pageNumber < b.pageNumber;
+              });
+  }
+  setResult(std::move(result));
   finish();
 }
 
@@ -482,18 +572,29 @@ void DictionaryWordSelectActivity::lookupSelectedWord() {
     return;
   }
 
-  GUI.drawPopup(renderer, lookup.status == DictionaryLookupResult::Status::NoDictionary
-                              ? tr(STR_DICTIONARY_NONE_SELECTED)
-                              : tr(STR_DEFINITION_NOT_FOUND));
+  GUI.drawPopup(renderer, DictionaryStore::lookupErrorMessage(lookup.status));
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   delay(900);
   requestUpdate();
 }
 
 void DictionaryWordSelectActivity::loop() {
+  if (pendingPageDirection != 0) {
+    RenderLock lock(*this);
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      pageLoader(SelectionPageRequest::Cancel);
+      pendingPageDirection = 0;
+      requestUpdate();
+      return;
+    }
+    acceptSelectionPage(pageLoader(SelectionPageRequest::Poll));
+    return;
+  }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     if (highlightPhraseMode && anchorWordIndex >= 0) {
       anchorWordIndex = -1;
+      selectedFragments.clear();
+      selectionDirection = 0;
       requestUpdate();
       return;
     }
@@ -513,10 +614,18 @@ void DictionaryWordSelectActivity::loop() {
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::PageBack)) {
+    if (highlightPhraseMode && pageLoader && (mappedInput.getHeldTime() >= 450 || rows.empty())) {
+      stepSelectionPage(-1);
+      return;
+    }
     moveRow(-1);
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::PageForward)) {
+    if (highlightPhraseMode && pageLoader && (mappedInput.getHeldTime() >= 450 || rows.empty())) {
+      stepSelectionPage(1);
+      return;
+    }
     moveRow(1);
     return;
   }
@@ -531,6 +640,13 @@ void DictionaryWordSelectActivity::loop() {
 
 void DictionaryWordSelectActivity::render(RenderLock&&) {
   renderer.clearScreen();
+  if (pendingPageDirection != 0) {
+    renderer.drawCenteredText(UI_12_FONT_ID, renderer.getScreenHeight() / 2, tr(STR_LOADING));
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    return;
+  }
   std::optional<FontCacheManager::PrewarmScope> fontPrewarm;
   if (page) {
     if (auto* fcm = renderer.getFontCacheManager()) {
@@ -565,11 +681,16 @@ void DictionaryWordSelectActivity::render(RenderLock&&) {
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   GUI.drawSideButtonHints(renderer, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  if (highlightPhraseMode && pageLoader) {
+    renderer.drawCenteredText(SMALL_FONT_ID, renderer.getScreenHeight() - metrics.buttonHintsHeight - 16,
+                              tr(STR_SELECTION_PAGE_HINT));
+  }
 
   if (!highlightPhraseMode) {
     storeSelectionBaseRegions();
   }
   prewarmCurrentSelectionText();
   drawSelectionHighlight();
+  if (selectionPageError) GUI.drawPopup(renderer, tr(STR_PAGE_LOAD_ERROR));
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }

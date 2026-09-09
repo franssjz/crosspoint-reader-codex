@@ -1,2 +1,3 @@
 fonttools>=4.62.1
 freetype-py>=2.5.1
+zopfli>=0.2.0

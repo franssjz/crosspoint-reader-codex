@@ -94,8 +94,11 @@ class Xtc {
    * @return Error code
    */
   xtc::XtcError loadPageStreaming(uint32_t pageIndex,
-                                  std::function<void(const uint8_t* data, size_t size, size_t offset)> callback,
+                                  const std::function<void(const uint8_t* data, size_t size, size_t offset)>& callback,
                                   size_t chunkSize = 1024) const;
+  xtc::XtcError loadPageStreaming(uint32_t pageIndex, xtc::XtcParser::StreamCallback callback, void* context,
+                                  size_t chunkSize = 1024) const;
+  xtc::XtcError loadPagePlanePairs(uint32_t pageIndex, xtc::XtcParser::PlanePairCallback callback, void* context) const;
 
   // Progress calculation
   uint8_t calculateProgress(uint32_t currentPage) const;

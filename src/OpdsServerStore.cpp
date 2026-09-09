@@ -20,6 +20,7 @@ bool OpdsServerStore::saveToFile() const {
 }
 
 bool OpdsServerStore::loadFromFile() {
+  JsonSettingsIO::recoverFile(OPDS_FILE_JSON);
   if (Storage.exists(OPDS_FILE_JSON)) {
     String json = Storage.readFile(OPDS_FILE_JSON);
     if (!json.isEmpty()) {

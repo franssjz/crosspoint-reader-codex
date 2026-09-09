@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <climits>
 #include <optional>
 #include <utility>
 
@@ -20,6 +21,7 @@ constexpr size_t MAX_WRAPPED_DEFINITION_LINES = 180;
 
 void DictionaryDefinitionActivity::onEnter() {
   Activity::onEnter();
+  trail.push(headword.c_str());
   prepareDefinitionFontMetrics();
   wrapText();
   requestUpdate();
@@ -56,23 +58,6 @@ void DictionaryDefinitionActivity::prepareDefinitionFontMetrics() {
 
 int DictionaryDefinitionActivity::measureDefinitionText(const char* text) const {
   return renderer.getTextAdvanceX(definitionFontId, text, EpdFontFamily::REGULAR);
-}
-
-void DictionaryDefinitionActivity::prewarmVisibleDefinitionText() const {
-  auto* fcm = renderer.getFontCacheManager();
-  if (!fcm) return;
-
-  const int startLine = currentPage * linesPerPage;
-  std::string visibleText;
-  visibleText.reserve(512);
-  for (int i = 0; i < linesPerPage && startLine + i < static_cast<int>(wrappedLines.size()); ++i) {
-    if (!visibleText.empty()) visibleText.push_back('\n');
-    visibleText += wrappedLines[startLine + i];
-  }
-
-  if (!visibleText.empty()) {
-    fcm->prewarmCache(definitionFontId, visibleText.c_str(), 0x01);
-  }
 }
 
 void DictionaryDefinitionActivity::wrapText() {
@@ -122,15 +107,13 @@ void DictionaryDefinitionActivity::wrapText() {
 
   auto continuationPrefixFor = [](const std::string& line, const std::string& prefix) {
     size_t pos = prefix.size();
-    if (pos + 1 < line.size() && (line[pos] == '-' || line[pos] == '*' || line[pos] == '+') &&
-        line[pos + 1] == ' ') {
+    if (pos + 1 < line.size() && (line[pos] == '-' || line[pos] == '*' || line[pos] == '+') && line[pos + 1] == ' ') {
       return prefix + "  ";
     }
 
     const size_t numberStart = pos;
     while (pos < line.size() && std::isdigit(static_cast<unsigned char>(line[pos]))) ++pos;
-    if (pos > numberStart && pos + 1 < line.size() && (line[pos] == '.' || line[pos] == ')') &&
-        line[pos + 1] == ' ') {
+    if (pos > numberStart && pos + 1 < line.size() && (line[pos] == '.' || line[pos] == ')') && line[pos + 1] == ' ') {
       return prefix + std::string(pos + 2 - prefix.size(), ' ');
     }
     return prefix;
@@ -237,32 +220,231 @@ void DictionaryDefinitionActivity::wrapText() {
   currentPage = std::clamp(currentPage, 0, totalPages - 1);
 }
 
-void DictionaryDefinitionActivity::loop() {
-  const bool prevPage = mappedInput.wasReleased(MappedInputManager::Button::PageBack) ||
-                        mappedInput.wasReleased(MappedInputManager::Button::Left);
-  const bool nextPage = mappedInput.wasReleased(MappedInputManager::Button::PageForward) ||
-                        mappedInput.wasReleased(MappedInputManager::Button::Right);
+void DictionaryDefinitionActivity::updateWordSelection() {
+  selectableWordCount = 0;
+  selectedWord.clear();
+  DictionaryNavigation::WordSpan selectedSpan;
+  const int startLine = currentPage * linesPerPage;
+  for (int line = startLine; line < startLine + linesPerPage && line < static_cast<int>(wrappedLines.size()); ++line) {
+    size_t cursor = 0;
+    DictionaryNavigation::WordSpan span;
+    while (DictionaryNavigation::nextWord(wrappedLines[line], cursor, span)) {
+      // When the requested ordinal is beyond this page, retain the last word.
+      if (selectableWordCount <= selectedWordOrdinal) {
+        selectedSpan = span;
+        selectedWordLine = line;
+      }
+      ++selectableWordCount;
+    }
+  }
+  if (selectableWordCount == 0) return;
+  selectedWordOrdinal = std::clamp(selectedWordOrdinal, 0, selectableWordCount - 1);
+  const auto& line = wrappedLines[selectedWordLine];
+  selectedWord = line.substr(selectedSpan.offset, selectedSpan.length);
+  const std::string prefix = line.substr(0, selectedSpan.offset);
+  selectedWordX = measureDefinitionText(prefix.c_str());
+  selectedWordWidth = std::max(1, measureDefinitionText(selectedWord.c_str()));
+}
 
-  if (prevPage && currentPage > 0) {
-    --currentPage;
+void DictionaryDefinitionActivity::openDictionaryPicker() {
+  DICTIONARIES.ensureScanned();
+  if (DICTIONARIES.getEntries().empty()) {
+    lookupStatus = DictionaryLookupResult::Status::NoDictionary;
+    view = View::LookupError;
+    return;
+  }
+  menuIndex = std::max(0, DICTIONARIES.getActiveIndex());
+  view = View::Dictionaries;
+}
+
+bool DictionaryDefinitionActivity::lookupWord(const std::string& query, const bool append, const int restorePage) {
+  pendingQuery = query;
+  pendingAppend = append;
+  chainLimitReached = append && !trail.canPush();
+  if (chainLimitReached) {
+    view = View::LookupError;
     requestUpdate();
-    return;
+    return false;
   }
-  if (nextPage && currentPage + 1 < totalPages) {
-    ++currentPage;
+  if (auto* fcm = renderer.getFontCacheManager()) fcm->clearCache();
+  auto lookup = DICTIONARIES.lookup(pendingQuery, false);
+  lookupStatus = lookup.status;
+  if (lookup.status != DictionaryLookupResult::Status::Found) {
+    view = View::LookupError;
     requestUpdate();
-    return;
+    return false;
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    setResult(ActivityResult{});
-    finish();
-    return;
+  if (append) {
+    trail.setPage(currentPage);
+    if (!trail.push(lookup.headword.c_str())) {
+      chainLimitReached = true;
+      view = View::LookupError;
+      requestUpdate();
+      return false;
+    }
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+  headword = std::move(lookup.headword);
+  definition = std::move(lookup.definition);
+  truncated = lookup.truncated;
+  currentPage = restorePage;
+  definitionFontId = DICTIONARIES.getDefinitionFontId(readerFontId);
+  prepareDefinitionFontMetrics();
+  wrapText();
+  selectedWord.clear();
+  view = View::Definition;
+  requestUpdate();
+  return true;
+}
+
+void DictionaryDefinitionActivity::returnToPreviousLookup() {
+  const auto* previous = trail.previous();
+  if (!previous) {
     ActivityResult result;
     result.isCancelled = true;
     setResult(std::move(result));
     finish();
+    return;
+  }
+  // Leave the trail and current definition intact if reloading fails.
+  if (lookupWord(previous->query, false, previous->page)) {
+    trail.pop();
+    trail.setPage(currentPage);
+  }
+}
+
+void DictionaryDefinitionActivity::finishDefinition() {
+  setResult(ActivityResult{});
+  finish();
+}
+
+void DictionaryDefinitionActivity::loop() {
+  if (!mappedInput.wasAnyReleased()) return;
+  // The render task reads definition, wrapped lines, selection and font caches.
+  // Keep a lookup/reflow and its resulting view transition under the same lock.
+  RenderLock lock(*this);
+  const bool back = mappedInput.wasReleased(MappedInputManager::Button::Back);
+  const bool confirm = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
+  const bool previous = mappedInput.wasReleased(MappedInputManager::Button::Left) ||
+                        mappedInput.wasReleased(MappedInputManager::Button::Up);
+  const bool next = mappedInput.wasReleased(MappedInputManager::Button::Right) ||
+                    mappedInput.wasReleased(MappedInputManager::Button::Down);
+  const bool previousPage = mappedInput.wasReleased(MappedInputManager::Button::PageBack);
+  const bool nextPage = mappedInput.wasReleased(MappedInputManager::Button::PageForward);
+
+  if (back) {
+    if (view == View::Definition)
+      returnToPreviousLookup();
+    else {
+      view = View::Definition;
+      selectedWord.clear();
+      chainLimitReached = false;
+      requestUpdate();
+    }
+    return;
+  }
+
+  if (view == View::Definition) {
+    if (confirm) {
+      menuIndex = 0;
+      view = View::Actions;
+    } else if ((previous || previousPage) && currentPage > 0)
+      --currentPage;
+    else if ((next || nextPage) && currentPage + 1 < totalPages)
+      ++currentPage;
+  } else if (view == View::Actions) {
+    if (previous || previousPage) menuIndex = (menuIndex + 2) % 3;
+    if (next || nextPage) menuIndex = (menuIndex + 1) % 3;
+    if (confirm) {
+      if (menuIndex == 0) {
+        selectedWordOrdinal = 0;
+        updateWordSelection();
+        view = View::WordSelection;
+      } else if (menuIndex == 1) {
+        pendingQuery = headword;
+        pendingAppend = false;
+        openDictionaryPicker();
+      } else {
+        finishDefinition();
+        return;
+      }
+    }
+  } else if (view == View::WordSelection) {
+    if (confirm && !selectedWord.empty()) {
+      const std::string query = DictionaryStore::cleanWord(selectedWord);
+      if (!query.empty()) lookupWord(query, true);
+    } else {
+      if (previousPage && currentPage > 0) {
+        --currentPage;
+        selectedWordOrdinal = INT_MAX;
+      } else if (nextPage && currentPage + 1 < totalPages) {
+        ++currentPage;
+        selectedWordOrdinal = 0;
+      } else if (previous) {
+        if (selectedWordOrdinal > 0)
+          --selectedWordOrdinal;
+        else if (currentPage > 0) {
+          --currentPage;
+          selectedWordOrdinal = INT_MAX;
+        }
+      } else if (next) {
+        if (selectedWordOrdinal + 1 < selectableWordCount)
+          ++selectedWordOrdinal;
+        else if (currentPage + 1 < totalPages) {
+          ++currentPage;
+          selectedWordOrdinal = 0;
+        }
+      }
+      updateWordSelection();
+    }
+  } else if (view == View::Dictionaries) {
+    const auto& entries = DICTIONARIES.getEntries();
+    const int count = static_cast<int>(entries.size());
+    if (count > 0) {
+      if (previous || previousPage) menuIndex = (menuIndex + count - 1) % count;
+      if (next || nextPage) menuIndex = (menuIndex + 1) % count;
+      if (confirm) {
+        if (DICTIONARIES.setActiveIndex(menuIndex))
+          lookupWord(pendingQuery, pendingAppend);
+        else {
+          lookupStatus = entries[menuIndex].compressed ? DictionaryLookupResult::Status::NotReady
+                                                       : DictionaryLookupResult::Status::IoError;
+          view = View::LookupError;
+        }
+      }
+    }
+  } else if (view == View::LookupError && confirm && !chainLimitReached) {
+    openDictionaryPicker();
+  }
+  requestUpdate();
+}
+
+void DictionaryDefinitionActivity::renderMenu(const Rect& rect, const int bodyY) {
+  constexpr int padding = 10;
+  const int rowHeight = renderer.getLineHeight(UI_10_FONT_ID) + 12;
+  if (view == View::LookupError) {
+    const char* message =
+        chainLimitReached ? tr(STR_DICTIONARY_CHAIN_LIMIT) : DictionaryStore::lookupErrorMessage(lookupStatus);
+    const auto lines = renderer.wrappedText(UI_10_FONT_ID, message, rect.width - padding * 2, 4);
+    for (size_t i = 0; i < lines.size(); ++i) {
+      renderer.drawText(UI_10_FONT_ID, rect.x + padding, bodyY + static_cast<int>(i) * rowHeight, lines[i].c_str());
+    }
+    return;
+  }
+  const int rows = std::max(1, (rect.y + rect.height - bodyY - 16) / rowHeight);
+  const int first = (menuIndex / rows) * rows;
+  const auto& entries = DICTIONARIES.getEntries();
+  const int count = view == View::Actions ? 3 : static_cast<int>(entries.size());
+  for (int i = first; i < std::min(count, first + rows); ++i) {
+    std::string label;
+    if (view == View::Actions) {
+      label = i == 0 ? tr(STR_LOOK_UP_WORD) : i == 1 ? tr(STR_CHANGE_DICTIONARY) : tr(STR_DONE);
+    } else
+      label = entries[i].languageId + " - " + entries[i].name;
+    const std::string fitted = renderer.truncatedText(UI_10_FONT_ID, label.c_str(), rect.width - padding * 2 - 4);
+    const int y = bodyY + (i - first) * rowHeight;
+    if (i == menuIndex)
+      renderer.fillRect(rect.x + padding - 2, y - 2, rect.width - padding * 2 + 4, rowHeight - 2, true);
+    renderer.drawText(UI_10_FONT_ID, rect.x + padding, y, fitted.c_str(), i != menuIndex);
   }
 }
 
@@ -287,10 +469,13 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
   const int padding = 10;
   const int titleY = rect.y + padding;
   const int titleMaxWidth = rect.width - padding * 2 - 54;
-  const std::string title = renderer.truncatedText(UI_10_FONT_ID, headword.c_str(), titleMaxWidth, EpdFontFamily::BOLD);
+  const char* rawTitle = view == View::Dictionaries  ? tr(STR_CHANGE_DICTIONARY)
+                         : view == View::LookupError ? pendingQuery.c_str()
+                                                     : headword.c_str();
+  const std::string title = renderer.truncatedText(UI_10_FONT_ID, rawTitle, titleMaxWidth, EpdFontFamily::BOLD);
   renderer.drawText(UI_10_FONT_ID, rect.x + padding, titleY, title.c_str(), true, EpdFontFamily::BOLD);
 
-  if (totalPages > 1) {
+  if (totalPages > 1 && (view == View::Definition || view == View::WordSelection)) {
     const std::string pageText = std::to_string(currentPage + 1) + "/" + std::to_string(totalPages);
     const int pageWidth = renderer.getTextWidth(SMALL_FONT_ID, pageText.c_str());
     renderer.drawText(SMALL_FONT_ID, rect.x + rect.width - padding - pageWidth, titleY + 2, pageText.c_str());
@@ -302,13 +487,34 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
 
   const int bodyY = separatorY + 10;
   const int startLine = currentPage * linesPerPage;
-  prewarmVisibleDefinitionText();
-  for (int i = 0; i < linesPerPage && startLine + i < static_cast<int>(wrappedLines.size()); ++i) {
-    renderer.drawText(definitionFontId, rect.x + padding, bodyY + i * lineHeight,
-                      wrappedLines[startLine + i].c_str());
+  std::optional<FontCacheManager::PrewarmScope> definitionPrewarm;
+  if (view == View::Definition || view == View::WordSelection) {
+    if (auto* fcm = renderer.getFontCacheManager()) {
+      definitionPrewarm.emplace(*fcm);
+      for (int i = 0; i < linesPerPage && startLine + i < static_cast<int>(wrappedLines.size()); ++i) {
+        fcm->recordText(wrappedLines[startLine + i].c_str(), definitionFontId, EpdFontFamily::REGULAR);
+      }
+      definitionPrewarm->endScanAndPrewarm();
+    }
+    for (int i = 0; i < linesPerPage && startLine + i < static_cast<int>(wrappedLines.size()); ++i) {
+      renderer.drawText(definitionFontId, rect.x + padding, bodyY + i * lineHeight,
+                        wrappedLines[startLine + i].c_str());
+    }
+    if (view == View::WordSelection && !selectedWord.empty()) {
+      const int y = bodyY + (selectedWordLine - startLine) * lineHeight;
+      const int x = rect.x + padding + selectedWordX;
+      renderer.fillRect(x, y, std::min(selectedWordWidth + 2, rect.x + rect.width - padding - x), lineHeight, true);
+      renderer.drawText(definitionFontId, x, y, selectedWord.c_str(), false);
+    }
+  } else {
+    renderMenu(rect, bodyY);
   }
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DONE), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+  const char* confirmLabel = view == View::Definition      ? tr(STR_DICTIONARY)
+                             : view == View::WordSelection ? tr(STR_LOOK_UP_WORD)
+                             : view == View::LookupError   ? (chainLimitReached ? "" : tr(STR_CHANGE_DICTIONARY))
+                                                           : tr(STR_SELECT);
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }

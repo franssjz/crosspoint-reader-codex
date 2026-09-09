@@ -14,7 +14,7 @@
 namespace {
 constexpr const char* PAGE_LABEL = "Page ";
 constexpr unsigned long DELETE_BOOKMARK_HOLD_MS = 1000;
-}
+}  // namespace
 
 int BookmarksActivity::getPageItems() const {
   constexpr int lineHeight = 30;
@@ -29,16 +29,18 @@ int BookmarksActivity::getPageItems() const {
 
 std::string BookmarksActivity::getItemLabel(const int index) const {
   const auto& bookmark = bookmarks[index];
+  const char* text = sourceStore ? sourceStore->getText(bookmark) : bookmark.snippet.c_str();
+  if (!text) text = "";
   char buffer[64];
 
   if (bookmark.isTextHighlight) {
     snprintf(buffer, sizeof(buffer), "%d. %s", index + 1, tr(STR_TEXT_HIGHLIGHT_PREFIX));
-    return std::string(buffer) + bookmark.snippet;
+    return std::string(buffer) + text;
   }
 
-  if (!bookmark.snippet.empty()) {
+  if (*text) {
     snprintf(buffer, sizeof(buffer), "%d. %s", index + 1, tr(STR_PAGE_MARK_PREFIX));
-    return std::string(buffer) + bookmark.snippet;
+    return std::string(buffer) + text;
   }
 
   if (epub) {
@@ -89,6 +91,7 @@ void BookmarksActivity::confirmDeleteSelectedBookmark() {
                                                   current.endPageNumber == bookmark.endPageNumber &&
                                                   current.startWordIndex == bookmark.startWordIndex &&
                                                   current.endWordIndex == bookmark.endWordIndex &&
+                                                  current.memoryId == bookmark.memoryId &&
                                                   current.snippet == bookmark.snippet &&
                                                   current.hasVisibleTextOffset == bookmark.hasVisibleTextOffset &&
                                                   (!current.hasVisibleTextOffset ||
@@ -200,8 +203,7 @@ void BookmarksActivity::render(RenderLock&&) {
 
     const int displayY = 60 + contentY + i * 30;
     const bool isSelected = itemIndex == selectorIndex;
-    const std::string label =
-        renderer.truncatedText(UI_10_FONT_ID, getItemLabel(itemIndex).c_str(), contentWidth - 40);
+    const std::string label = renderer.truncatedText(UI_10_FONT_ID, getItemLabel(itemIndex).c_str(), contentWidth - 40);
     renderer.drawText(UI_10_FONT_ID, contentX + 20, displayY, label.c_str(), !isSelected);
   }
 

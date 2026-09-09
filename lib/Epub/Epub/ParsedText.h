@@ -2,6 +2,7 @@
 
 #include <EpdFontFamily.h>
 
+#include <algorithm>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -49,6 +50,7 @@ class ParsedText {
   bool forceParagraphIndents;
   bool hyphenationEnabled;
   bool focusReadingEnabled;
+  uint8_t wordSpacing;
   bool firstLineIndentPending = true;
 
   uint32_t visibleOffsetBaseAt(size_t wordIndex) const;
@@ -57,8 +59,7 @@ class ParsedText {
   void insertVisibleOffset(size_t wordIndex, uint32_t offset);
   void eraseVisibleOffsetPrefix(size_t count);
   void prepareParagraphIndent(const GfxRenderer& renderer, int fontId);
-  int calculateRubyExtraStartOffset(size_t wordIdx, size_t maxWordIdx, const GfxRenderer& renderer,
-                                    int fontId) const;
+  int calculateRubyExtraStartOffset(size_t wordIdx, size_t maxWordIdx, const GfxRenderer& renderer, int fontId) const;
   int calculateRubyExtraEndOffset(size_t lineStartIdx, size_t lineBreakIdx, const GfxRenderer& renderer,
                                   int fontId) const;
   std::vector<size_t> computeLineBreaks(const GfxRenderer& renderer, int fontId, int pageWidth,
@@ -79,12 +80,13 @@ class ParsedText {
  public:
   explicit ParsedText(const bool extraParagraphSpacing, const bool forceParagraphIndents = false,
                       const bool hyphenationEnabled = false, const bool focusReadingEnabled = false,
-                      const BlockStyle& blockStyle = BlockStyle())
+                      const uint8_t wordSpacing = 0, const BlockStyle& blockStyle = BlockStyle())
       : blockStyle(blockStyle),
         extraParagraphSpacing(extraParagraphSpacing),
         forceParagraphIndents(forceParagraphIndents),
         hyphenationEnabled(hyphenationEnabled),
-        focusReadingEnabled(focusReadingEnabled) {}
+        focusReadingEnabled(focusReadingEnabled),
+        wordSpacing(std::min<uint8_t>(wordSpacing, 4)) {}
   ~ParsedText() = default;
 
   void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false,

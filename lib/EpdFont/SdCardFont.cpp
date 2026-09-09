@@ -1,7 +1,5 @@
 #include "SdCardFont.h"
 
-#include "EpdFontFamily.h"
-
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Utf8.h>
@@ -10,6 +8,8 @@
 #include <climits>
 #include <cstring>
 #include <memory>
+
+#include "EpdFontFamily.h"
 
 static_assert(sizeof(EpdGlyph) == 16, "EpdGlyph must be 16 bytes to match .cpfont file layout");
 static_assert(sizeof(EpdUnicodeInterval) == 12, "EpdUnicodeInterval must be 12 bytes to match .cpfont file layout");
@@ -151,6 +151,14 @@ void SdCardFont::applyKernLigaturePointers(PerStyle& s, EpdFontData& data) const
   data.kernLeftClasses = s.miniKernLeftClasses;
   data.kernRightClasses = s.miniKernRightClasses;
   data.kernMatrix = s.miniKernMatrix;
+  // .cpfont stays binary-compatible: its class maps and matrix remain dense.
+  data.kernLeftCodepoints = nullptr;
+  data.kernLeftClassIds = nullptr;
+  data.kernRightCodepoints = nullptr;
+  data.kernRightClassIds = nullptr;
+  data.kernRowOffsets = nullptr;
+  data.kernSparseCols = nullptr;
+  data.kernSparseValues = nullptr;
   data.kernLeftEntryCount = s.miniKernLeftEntryCount;
   data.kernRightEntryCount = s.miniKernRightEntryCount;
   data.kernLeftClassCount = s.miniKernLeftClassCount;
@@ -916,8 +924,7 @@ int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint3
       }
 
       if (glyphLength > MINI_BM_CHUNK_SIZE) {
-        LOG_ERR("SDCF", "Prewarm: glyph %u B exceeds chunk %u B (style %u)", glyphLength, MINI_BM_CHUNK_SIZE,
-                styleIdx);
+        LOG_ERR("SDCF", "Prewarm: glyph %u B exceeds chunk %u B (style %u)", glyphLength, MINI_BM_CHUNK_SIZE, styleIdx);
         delete[] readOrder;
         delete[] mappings;
         freeStyleMiniData(s);

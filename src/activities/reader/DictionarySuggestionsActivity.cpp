@@ -22,7 +22,7 @@ void DictionarySuggestionsActivity::lookupSelected() {
   if (selectedIndex < 0 || selectedIndex >= static_cast<int>(suggestions.size())) return;
   const auto lookup = DICTIONARIES.lookup(suggestions[selectedIndex], false);
   if (lookup.status != DictionaryLookupResult::Status::Found) {
-    GUI.drawPopup(renderer, tr(STR_DEFINITION_NOT_FOUND));
+    GUI.drawPopup(renderer, DictionaryStore::lookupErrorMessage(lookup.status));
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     delay(700);
     requestUpdate();

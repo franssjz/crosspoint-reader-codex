@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "CumulativeSizeCache.h"
+
 class BookMetadataCache {
  public:
   struct BookMetadata {
@@ -51,14 +53,14 @@ class BookMetadataCache {
   bool loaded;
   bool buildMode;
 
-  FsFile bookFile;
+  mutable FsFile bookFile;
   // Temp file handles during build
   FsFile spineFile;
   FsFile tocFile;
 
   // Four bytes per spine item; avoids two seeks and a temporary href string on
   // every progress calculation and percentage jump.
-  std::vector<uint32_t> cumulativeSizes;
+  mutable CumulativeSizeCache cumulativeSizes;
 
   // Index for fast href→spineIndex lookup (used only for large EPUBs)
   struct SpineHrefIndexEntry {

@@ -51,6 +51,7 @@ class ZipFile {
   bool loadFileStatSlim(const char* filename, FileStatSlim* fileStat);
   long getDataOffset(const FileStatSlim& fileStat);
   bool loadZipDetails();
+  bool readExact(void* buffer, size_t length);
 
  public:
   explicit ZipFile(const std::string& filePath) : filePath(filePath) {}
@@ -93,38 +94,53 @@ class ZipFile {
       return false;
     }
 
-    file.seek(zipDetails.centralDirOffset);
+    if (!file.seek(zipDetails.centralDirOffset)) {
+      if (!wasOpen) close();
+      return false;
+    }
 
     uint32_t sig;
     char itemName[256];
 
+    bool success = true;
     while (file.available()) {
-      file.read(&sig, 4);
+      if (!readExact(&sig, 4)) {
+        success = false;
+        break;
+      }
       if (sig != 0x02014b50) {
         break;
       }
 
-      file.seekCur(24);
       uint16_t nameLen, m, k;
-      file.read(&nameLen, 2);
-      file.read(&m, 2);
-      file.read(&k, 2);
-      file.seekCur(12);
+      if (!file.seekCur(24) || !readExact(&nameLen, 2) || !readExact(&m, 2) || !readExact(&k, 2) || !file.seekCur(12)) {
+        success = false;
+        break;
+      }
 
       if (nameLen < sizeof(itemName)) {
-        file.read(itemName, nameLen);
+        if (!readExact(itemName, nameLen)) {
+          success = false;
+          break;
+        }
         itemName[nameLen] = '\0';
         callback(std::string_view{itemName, nameLen});
       } else {
-        file.seekCur(nameLen);
+        if (!file.seekCur(nameLen)) {
+          success = false;
+          break;
+        }
       }
 
-      file.seekCur(m + k);
+      if (!file.seekCur(m + k)) {
+        success = false;
+        break;
+      }
     }
 
     if (!wasOpen) {
       close();
     }
-    return true;
+    return success;
   }
 };

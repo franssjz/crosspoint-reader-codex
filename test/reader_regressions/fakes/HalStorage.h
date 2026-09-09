@@ -36,11 +36,21 @@ class HalFile {
     stream.seekg(offset, std::ios::cur);
     return static_cast<bool>(stream);
   }
+  uint32_t position() { return static_cast<uint32_t>(writing ? stream.tellp() : stream.tellg()); }
+  bool seekSet(const uint32_t offset) {
+    stream.clear();
+    if (writing)
+      stream.seekp(offset, std::ios::beg);
+    else
+      stream.seekg(offset, std::ios::beg);
+    return static_cast<bool>(stream);
+  }
   bool close() {
     if (!stream.is_open()) return true;
     stream.close();
     return !stream.fail();
   }
+  void flush() { stream.flush(); }
   bool isDirectory() const { return directory; }
   void getName(char* output, const size_t outputSize) const {
     if (!output || outputSize == 0) return;

@@ -24,6 +24,8 @@
 #include "RecentBooksStore.h"
 #include "SettingsList.h"
 #include "WifiCredentialStore.h"
+#include "activities/util/KeyboardLayoutSet.h"
+#include "util/AtomicFileReplace.h"
 #include "util/BookIdentity.h"
 #include "util/CprVcodexLogs.h"
 #include "util/ShortcutRegistry.h"
@@ -120,89 +122,25 @@ class JsonStreamWriter {
   bool ok_ = true;
 };
 
-bool copyVerifiedJsonTempToTarget(const char* moduleName, const char* tempPath, const char* targetPath,
-                                  const size_t expectedSize) {
-  HalFile source;
-  if (!Storage.openFileForRead(moduleName, tempPath, source)) {
-    return false;
-  }
-
-  HalFile target;
-  if (!Storage.openFileForWrite(moduleName, targetPath, target)) {
-    source.close();
-    return false;
-  }
-
-  uint8_t buffer[256];
-  size_t copied = 0;
-  bool complete = true;
-  while (true) {
-    const int readBytes = source.read(buffer, sizeof(buffer));
-    if (readBytes < 0) {
-      complete = false;
-      break;
-    }
-    if (readBytes == 0) {
-      break;
-    }
-
-    const size_t written = target.write(buffer, static_cast<size_t>(readBytes));
-    if (written != static_cast<size_t>(readBytes)) {
-      complete = false;
-      break;
-    }
-    copied += written;
-  }
-
-  target.flush();
-  target.close();
-  source.close();
-
-  if (!complete || copied != expectedSize) {
-    Storage.remove(targetPath);
-    return false;
-  }
-
-  HalFile verification;
-  if (!Storage.openFileForRead(moduleName, targetPath, verification)) {
-    Storage.remove(targetPath);
-    return false;
-  }
-  const bool sizeMatches = verification.fileSize64() == expectedSize;
-  verification.close();
-  if (!sizeMatches) {
-    Storage.remove(targetPath);
-    return false;
-  }
-
-  return true;
-}
-
 bool promoteJsonTempFile(const char* moduleName, const char* tempPath, const char* targetPath,
                          const size_t expectedSize) {
-  if (Storage.exists(targetPath) && !Storage.remove(targetPath)) {
-    Storage.remove(tempPath);
-    LOG_ERR(moduleName, "Could not remove JSON file before replace: %s", targetPath);
-    CPR_VCODEX_LOG_EVENT(moduleName, std::string("Could not remove JSON file before replace: ") + targetPath);
+  // Reopen after close to reject a short/failed SD write before touching the
+  // committed file. This is a save path, never a render/input hot path.
+  HalFile verification;
+  if (!Storage.openFileForRead(moduleName, tempPath, verification)) return false;
+  const bool complete = expectedSize > 0 && verification.fileSize64() == expectedSize;
+  verification.close();
+  if (!complete) {
+    LOG_ERR(moduleName, "Refused incomplete JSON replacement: %s", tempPath);
     return false;
   }
-
-  if (!Storage.rename(tempPath, targetPath)) {
-    LOG_ERR(moduleName, "Could not rename JSON temp file to final path: %s; trying checked copy", targetPath);
-    CPR_VCODEX_LOG_EVENT(moduleName, std::string("JSON temp rename failed; trying checked copy for ") + targetPath);
-
-    if (!copyVerifiedJsonTempToTarget(moduleName, tempPath, targetPath, expectedSize)) {
-      LOG_ERR(moduleName, "Could not promote JSON temp file to final path: %s", targetPath);
-      CPR_VCODEX_LOG_EVENT(moduleName,
-                           std::string("Could not promote JSON temp file; kept it for recovery: ") + tempPath);
-      return false;
-    }
-
-    Storage.remove(tempPath);
-    LOG_DBG(moduleName, "Recovered JSON replacement via checked copy: %s", targetPath);
-    CPR_VCODEX_LOG_EVENT(moduleName, std::string("Recovered JSON replacement via checked copy: ") + targetPath);
+  // .bak already has application-specific semantics for reading statistics.
+  // Use a separate transaction backup without changing any existing formats.
+  const std::string previous = std::string(targetPath) + ".previous";
+  if (!AtomicFileReplace::promote(Storage, tempPath, targetPath, previous.c_str())) {
+    LOG_ERR(moduleName, "JSON replacement failed; preserved committed data: %s", targetPath);
+    return false;
   }
-
   return true;
 }
 
@@ -242,8 +180,8 @@ bool saveJsonDocumentToFile(const char* moduleName, const char* path, const Json
   const size_t expected = measureJson(doc);
   const size_t written = serializeJson(doc, file);
   file.flush();
-  file.close();
-  if (written == 0 || written != expected) {
+  const bool closed = file.close();
+  if (!closed || written == 0 || written != expected) {
     Storage.remove(tempPath);
     LOG_ERR(moduleName, "Incomplete JSON write for %s: %u/%u bytes", targetPath, static_cast<unsigned>(written),
             static_cast<unsigned>(expected));
@@ -515,6 +453,8 @@ bool loadSettingsDirect(CrossPointSettings& s, const JsonDocument& doc, bool* ne
   }
 
   loadEnum("lineSpacing", s.lineSpacing, CrossPointSettings::LINE_COMPRESSION_COUNT);
+  loadEnum("wordSpacing", s.wordSpacing, 5);
+  loadEnum("readerAutoPageTurn", s.readerAutoPageTurn, 5);
   loadValue("screenMargin", s.screenMargin, 5, 40);
   loadEnum("paragraphAlignment", s.paragraphAlignment, CrossPointSettings::PARAGRAPH_ALIGNMENT_COUNT);
   loadToggle("embeddedStyle", s.embeddedStyle);
@@ -567,6 +507,7 @@ bool loadSettingsDirect(CrossPointSettings& s, const JsonDocument& doc, bool* ne
     }
   }
   loadEnum("tiltPageTurn", s.tiltPageTurn, CrossPointSettings::TILT_PAGE_TURN_COUNT);
+  s.keyboardLayouts = KeyboardLayoutSet::normalizeMask(doc["keyboardLayouts"] | s.keyboardLayouts);
   loadEnum("sleepTimeout", s.sleepTimeout, CrossPointSettings::SLEEP_TIMEOUT_COUNT);
   loadToggle("showHiddenFiles", s.showHiddenFiles);
   loadToggle("hideFileExtension", s.hideFileExtension);
@@ -887,50 +828,99 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
   return true;
 }
 
+bool JsonSettingsIO::recoverFile(const char* path) {
+  if (!path || !*path) return false;
+  const std::string previous = std::string(path) + ".previous";
+  const bool recovered = AtomicFileReplace::recover(Storage, path, previous.c_str());
+  if (!recovered && Storage.exists(previous.c_str())) {
+    LOG_ERR("JSN", "Could not recover previous committed data: %s", path);
+  }
+  return recovered;
+}
+
 // ---- CrossPointSettings ----
+
+bool JsonSettingsIO::saveBookReaderSettings(const ReaderPreferences& settings, const bool enabled, const char* path) {
+  JsonDocument doc;
+  doc["version"] = 1;
+  doc["enabled"] = enabled;
+#define CPR_SAVE_BOOK_FIELD(name, maximum) doc[#name] = settings.name;
+  CPR_READER_PREFERENCE_FIELDS(CPR_SAVE_BOOK_FIELD)
+#undef CPR_SAVE_BOOK_FIELD
+  doc["sdFontFamilyName"] = settings.sdFontFamilyName;
+  return saveJsonDocumentToFile("BRS", path, doc);
+}
+
+bool JsonSettingsIO::loadBookReaderSettings(ReaderPreferences& settings, bool& enabled, const char* path) {
+  JsonDocument doc;
+  if (!loadJsonDocumentFromFile("BRS", path, doc) || !doc.is<JsonObject>() || !doc["version"].is<unsigned>() ||
+      doc["version"].as<unsigned>() != 1 || !doc["enabled"].is<bool>())
+    return false;
+  ReaderPreferences parsed = settings;
+#define CPR_LOAD_BOOK_FIELD(name, maximum)                                               \
+  if (!doc[#name].isNull()) {                                                            \
+    if (!doc[#name].is<unsigned>() || doc[#name].as<unsigned>() > maximum) return false; \
+    parsed.name = doc[#name].as<uint8_t>();                                              \
+  }
+  CPR_READER_PREFERENCE_FIELDS(CPR_LOAD_BOOK_FIELD)
+#undef CPR_LOAD_BOOK_FIELD
+  if (!doc["sdFontFamilyName"].isNull()) {
+    if (!doc["sdFontFamilyName"].is<const char*>()) return false;
+    const char* font = doc["sdFontFamilyName"].as<const char*>();
+    if (std::strlen(font) >= sizeof(parsed.sdFontFamilyName)) return false;
+    std::strcpy(parsed.sdFontFamilyName, font);
+  }
+  settings = parsed;
+  enabled = doc["enabled"].as<bool>();
+  return true;
+}
 
 bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path) {
   JsonDocument doc;
+  const ReaderPreferences reader = s.persistedReaderPreferences();
 
   doc["sleepScreen"] = s.sleepScreen;
   doc["sleepScreenCoverMode"] = s.sleepScreenCoverMode;
   doc["sleepScreenCoverFilter"] = s.sleepScreenCoverFilter;
   doc["cleanSleepRefresh"] = s.cleanSleepRefresh;
   doc["hideBatteryPercentage"] = s.hideBatteryPercentage;
-  doc["refreshFrequency"] = s.refreshFrequency;
+  doc["refreshFrequency"] = reader.refreshFrequency;
   doc["uiTheme"] = s.uiTheme;
   doc["uiThemeSchemaVersion"] = UI_THEME_SCHEMA_VERSION;
-  doc["fadingFix"] = s.fadingFix;
-  doc["darkMode"] = s.darkMode;
+  doc["fadingFix"] = reader.fadingFix;
+  doc["darkMode"] = reader.darkMode;
   doc["antiGhostingExperimental"] = s.antiGhostingExperimental;
 
-  doc["fontFamily"] = s.fontFamily;
+  doc["fontFamily"] = reader.fontFamily;
   doc["fontFamilySchemaVersion"] = FONT_FAMILY_SCHEMA_VERSION;
-  if (s.sdFontFamilyName[0] != '\0') {
-    doc["sdFontFamilyName"] = s.sdFontFamilyName;
+  if (reader.sdFontFamilyName[0] != '\0') {
+    doc["sdFontFamilyName"] = reader.sdFontFamilyName;
   }
-  doc["fontSize"] = s.fontSize;
+  doc["fontSize"] = reader.fontSize;
   doc["fontSizeSchemaVersion"] = FONT_SIZE_SCHEMA_VERSION;
-  doc["lineSpacing"] = s.lineSpacing;
-  doc["screenMargin"] = s.screenMargin;
-  doc["paragraphAlignment"] = s.paragraphAlignment;
-  doc["embeddedStyle"] = s.embeddedStyle;
-  doc["hyphenationEnabled"] = s.hyphenationEnabled;
-  doc["bionicReading"] = s.bionicReading;
-  doc["orientation"] = s.orientation;
-  doc["extraParagraphSpacing"] = s.extraParagraphSpacing;
-  doc["forceParagraphIndents"] = s.forceParagraphIndents;
-  doc["textAntiAliasing"] = s.textAntiAliasing;
-  doc["textDarkness"] = s.textDarkness;
+  doc["lineSpacing"] = reader.lineSpacing;
+  doc["wordSpacing"] = reader.wordSpacing;
+  doc["screenMargin"] = reader.screenMargin;
+  doc["paragraphAlignment"] = reader.paragraphAlignment;
+  doc["embeddedStyle"] = reader.embeddedStyle;
+  doc["hyphenationEnabled"] = reader.hyphenationEnabled;
+  doc["bionicReading"] = reader.bionicReading;
+  doc["orientation"] = reader.orientation;
+  doc["extraParagraphSpacing"] = reader.extraParagraphSpacing;
+  doc["forceParagraphIndents"] = reader.forceParagraphIndents;
+  doc["textAntiAliasing"] = reader.textAntiAliasing;
+  doc["textDarkness"] = reader.textDarkness;
   doc["textDarknessSchemaVersion"] = TEXT_DARKNESS_SCHEMA_VERSION;
-  doc["readerRefreshMode"] = s.readerRefreshMode;
-  doc["imageRendering"] = s.imageRendering;
+  doc["readerRefreshMode"] = reader.readerRefreshMode;
+  doc["imageRendering"] = reader.imageRendering;
+  doc["readerAutoPageTurn"] = reader.readerAutoPageTurn;
 
   doc["sideButtonLayout"] = s.sideButtonLayout;
   doc["frontButtonFollowOrientation"] = s.frontButtonFollowOrientation;
   doc["longPressButtonBehavior"] = s.longPressButtonBehavior;
   doc["longPressChapterSkip"] = s.longPressButtonBehavior == CrossPointSettings::LONG_PRESS_CHAPTER_SKIP;
   doc["shortPwrBtn"] = s.shortPwrBtn;
+  doc["keyboardLayouts"] = KeyboardLayoutSet::normalizeMask(s.keyboardLayouts);
   doc["tiltPageTurn"] = s.tiltPageTurn;
 
   doc["sleepTimeout"] = s.sleepTimeout;
@@ -1769,8 +1759,8 @@ bool JsonSettingsIO::saveReadingStats(const ReadingStatsStore& store, const char
   writer.literal("]}");
 
   file.flush();
-  file.close();
-  if (!writer.ok() || writer.writtenBytes() == 0 || writer.writtenBytes() != writer.expectedBytes()) {
+  const bool closed = file.close();
+  if (!closed || !writer.ok() || writer.writtenBytes() == 0 || writer.writtenBytes() != writer.expectedBytes()) {
     Storage.remove(tempPath);
     LOG_ERR("RST", "Incomplete JSON write for %s: %u/%u bytes", path, static_cast<unsigned>(writer.writtenBytes()),
             static_cast<unsigned>(writer.expectedBytes()));

@@ -15,6 +15,7 @@ class BookmarksActivity final : public Activity {
   std::vector<BookmarkStore::Bookmark> bookmarks;
   std::string headerTitle;
   std::function<bool(const BookmarkStore::Bookmark&)> onDeleteBookmark;
+  BookmarkStore* sourceStore = nullptr;
   ButtonNavigator buttonNavigator;
   int selectorIndex = 0;
 
@@ -26,12 +27,14 @@ class BookmarksActivity final : public Activity {
   explicit BookmarksActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                              const std::vector<BookmarkStore::Bookmark>& bookmarks,
                              std::shared_ptr<Epub> epub = nullptr, std::string headerTitle = {},
-                             std::function<bool(const BookmarkStore::Bookmark&)> onDeleteBookmark = nullptr)
+                             std::function<bool(const BookmarkStore::Bookmark&)> onDeleteBookmark = nullptr,
+                             BookmarkStore* sourceStore = nullptr)
       : Activity("Bookmarks", renderer, mappedInput),
         epub(std::move(epub)),
         bookmarks(bookmarks),
         headerTitle(std::move(headerTitle)),
-        onDeleteBookmark(std::move(onDeleteBookmark)) {}
+        onDeleteBookmark(std::move(onDeleteBookmark)),
+        sourceStore(sourceStore) {}
 
   void onEnter() override;
   void onExit() override;

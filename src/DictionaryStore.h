@@ -27,7 +27,7 @@ struct DictionaryEntry {
 };
 
 struct DictionaryLookupResult {
-  enum class Status { Found, NotFound, NoDictionary, NotReady };
+  enum class Status { Found, NotFound, NoDictionary, NotReady, IoError, InvalidDictionary, OutOfMemory };
 
   Status status = Status::NotFound;
   std::string query;
@@ -40,11 +40,7 @@ struct DictionaryLookupResult {
 
 class DictionaryStore {
  public:
-  enum DefinitionTextSize : uint8_t {
-    DEF_TEXT_SMALL = 0,
-    DEF_TEXT_LARGE = 1,
-    DEF_TEXT_SIZE_COUNT
-  };
+  enum DefinitionTextSize : uint8_t { DEF_TEXT_SMALL = 0, DEF_TEXT_LARGE = 1, DEF_TEXT_SIZE_COUNT };
 
   static DictionaryStore& getInstance();
 
@@ -68,6 +64,7 @@ class DictionaryStore {
   void clearHistory();
 
   static std::string cleanWord(const std::string& word);
+  static const char* lookupErrorMessage(DictionaryLookupResult::Status status);
 
  private:
   DictionaryStore() = default;
@@ -93,6 +90,8 @@ class DictionaryStore {
   std::string activeIfoPath;
   int activeIndex = -1;
   bool configLoaded = false;
+  bool configReadable = true;
+  bool historyReadable = true;
   bool scanned = false;
   bool activeOnlyLoaded = false;
   uint8_t definitionTextSize = DEF_TEXT_SMALL;
@@ -102,13 +101,18 @@ class DictionaryStore {
   void clearActiveOnlyEntry();
   DictionaryEntry* activeEntry();
   const DictionaryEntry* activeEntry() const;
-  bool ensurePrepared(DictionaryEntry& entry, const std::function<void(int percent)>& onProgress = nullptr);
+  bool ensurePrepared(DictionaryEntry& entry, const std::function<void(int percent)>& onProgress = nullptr,
+                      DictionaryLookupResult::Status* error = nullptr);
   bool loadCheckpointCache(DictionaryEntry& entry);
   bool saveCheckpointCache(const DictionaryEntry& entry) const;
-  bool findIndexHit(const DictionaryEntry& entry, const std::string& word, IndexHit& hit) const;
-  bool lookupSynonym(const DictionaryEntry& entry, const std::string& word, std::string& canonical) const;
-  std::string headwordAtOrdinal(const DictionaryEntry& entry, uint32_t ordinal) const;
-  std::string readDefinition(const DictionaryEntry& entry, const IndexHit& hit, bool& truncated) const;
+  bool findIndexHit(const DictionaryEntry& entry, const std::string& word, IndexHit& hit,
+                    DictionaryLookupResult::Status* error = nullptr) const;
+  bool lookupSynonym(const DictionaryEntry& entry, const std::string& word, std::string& canonical,
+                     DictionaryLookupResult::Status* error = nullptr) const;
+  std::string headwordAtOrdinal(const DictionaryEntry& entry, uint32_t ordinal,
+                                DictionaryLookupResult::Status* error = nullptr) const;
+  std::string readDefinition(const DictionaryEntry& entry, const IndexHit& hit, bool& truncated,
+                             DictionaryLookupResult::Status& status) const;
   std::vector<std::string> findSuggestions(const DictionaryEntry& entry, const std::string& word, int maxResults) const;
   std::vector<std::string> getFallbackForms(const DictionaryEntry& entry, const std::string& word) const;
 };

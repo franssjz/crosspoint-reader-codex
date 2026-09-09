@@ -170,7 +170,8 @@ bool RecentBooksStore::updateBookPath(const std::string& oldKey, const std::stri
   }
 
   const std::string resolvedBookId =
-      !bookId.empty() ? bookId : (!normalizedNewPath.empty() ? BookIdentity::resolveStableBookId(normalizedNewPath) : "");
+      !bookId.empty() ? bookId
+                      : (!normalizedNewPath.empty() ? BookIdentity::resolveStableBookId(normalizedNewPath) : "");
   const int existingIndex = findBookIndex(oldKey, resolvedBookId);
   if (existingIndex < 0) {
     return false;
@@ -252,6 +253,7 @@ RecentBook RecentBooksStore::getDataFromBook(std::string path) const {
 }
 
 bool RecentBooksStore::loadFromFile() {
+  JsonSettingsIO::recoverFile(RECENT_BOOKS_FILE_JSON);
   const std::string tempPath = std::string(RECENT_BOOKS_FILE_JSON) + ".tmp";
   if (!Storage.exists(RECENT_BOOKS_FILE_JSON) && Storage.exists(tempPath.c_str())) {
     if (Storage.rename(tempPath.c_str(), RECENT_BOOKS_FILE_JSON)) {

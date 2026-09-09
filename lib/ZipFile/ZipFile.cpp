@@ -46,10 +46,12 @@ int zipReadCallback(uzlib_uncomp* uncomp) {
   if (ctx->fileRemaining == 0) return -1;
 
   const size_t toRead = ctx->fileRemaining < ctx->readBufSize ? ctx->fileRemaining : ctx->readBufSize;
-  const size_t bytesRead = ctx->file->read(ctx->readBuf, toRead);
+  const int readResult = ctx->file->read(ctx->readBuf, toRead);
+  // HAL uses negative values for I/O errors. Check before converting to size_t
+  // or changing the decoder bounds / remaining byte count.
+  if (readResult <= 0) return -1;
+  const size_t bytesRead = static_cast<size_t>(readResult);
   ctx->fileRemaining -= bytesRead;
-
-  if (bytesRead == 0) return -1;
 
   uncomp->source = ctx->readBuf + 1;
   uncomp->source_limit = ctx->readBuf + bytesRead;
@@ -57,13 +59,22 @@ int zipReadCallback(uzlib_uncomp* uncomp) {
 }
 }  // namespace
 
+bool ZipFile::readExact(void* buffer, const size_t length) {
+  const int result = file.read(buffer, length);
+  if (result < 0 || static_cast<size_t>(result) != length) {
+    LOG_ERR("ZIP", "Failed to read %zu bytes (got %d)", length, result);
+    return false;
+  }
+  return true;
+}
+
 bool ZipFile::loadAllFileStatSlims() {
   const ScopedOpenClose zip{*this};
   if (!zip) return false;
 
   if (!loadZipDetails()) return false;
 
-  file.seek(zipDetails.centralDirOffset);
+  if (!file.seek(zipDetails.centralDirOffset)) return false;
 
   uint32_t sig;
   char itemName[256];
@@ -71,34 +82,43 @@ bool ZipFile::loadAllFileStatSlims() {
   fileStatSlimCache.reserve(zipDetails.totalEntries);
 
   while (file.available()) {
-    file.read(&sig, 4);
+    if (!readExact(&sig, 4)) {
+      fileStatSlimCache.clear();
+      return false;
+    }
     if (sig != 0x02014b50) break;  // End of list
 
     FileStatSlim fileStat = {};
 
-    file.seekCur(6);
-    file.read(&fileStat.method, 2);
-    file.seekCur(8);
-    file.read(&fileStat.compressedSize, 4);
-    file.read(&fileStat.uncompressedSize, 4);
     uint16_t nameLen, m, k;
-    file.read(&nameLen, 2);
-    file.read(&m, 2);
-    file.read(&k, 2);
-    file.seekCur(8);
-    file.read(&fileStat.localHeaderOffset, 4);
+    if (!file.seekCur(6) || !readExact(&fileStat.method, 2) || !file.seekCur(8) ||
+        !readExact(&fileStat.compressedSize, 4) || !readExact(&fileStat.uncompressedSize, 4) ||
+        !readExact(&nameLen, 2) || !readExact(&m, 2) || !readExact(&k, 2) || !file.seekCur(8) ||
+        !readExact(&fileStat.localHeaderOffset, 4)) {
+      fileStatSlimCache.clear();
+      return false;
+    }
 
     if (nameLen < sizeof(itemName)) {
-      file.read(itemName, nameLen);
+      if (!readExact(itemName, nameLen)) {
+        fileStatSlimCache.clear();
+        return false;
+      }
       itemName[nameLen] = '\0';
       fileStatSlimCache.emplace(itemName, fileStat);
     } else {
       // Skip over oversized entry names to avoid writing past fixed buffer.
-      file.seekCur(nameLen);
+      if (!file.seekCur(nameLen)) {
+        fileStatSlimCache.clear();
+        return false;
+      }
     }
 
     // Skip the rest of this entry (extra field + comment)
-    file.seekCur(m + k);
+    if (!file.seekCur(m + k)) {
+      fileStatSlimCache.clear();
+      return false;
+    }
   }
 
   // Set cursor to start of central directory for sequential access
@@ -128,7 +148,7 @@ bool ZipFile::loadFileStatSlim(const char* filename, FileStatSlim* fileStat) {
   bool wrapped = false;
   bool found = false;
 
-  file.seek(startPos);
+  if (!file.seek(startPos)) return false;
 
   uint32_t sig;
   char itemName[256];
@@ -136,11 +156,12 @@ bool ZipFile::loadFileStatSlim(const char* filename, FileStatSlim* fileStat) {
   while (true) {
     uint32_t entryStart = file.position();
 
-    if (file.read(&sig, 4) != 4 || sig != 0x02014b50) {
+    if (!readExact(&sig, 4)) return false;
+    if (sig != 0x02014b50) {
       // End of central directory
       if (!wrapped && lastCentralDirPosValid && startPos != zipDetails.centralDirOffset) {
         // Wrap around to beginning
-        file.seek(zipDetails.centralDirOffset);
+        if (!file.seek(zipDetails.centralDirOffset)) return false;
         wrapped = true;
         continue;
       }
@@ -152,25 +173,20 @@ bool ZipFile::loadFileStatSlim(const char* filename, FileStatSlim* fileStat) {
       break;
     }
 
-    file.seekCur(6);
-    file.read(&fileStat->method, 2);
-    file.seekCur(8);
-    file.read(&fileStat->compressedSize, 4);
-    file.read(&fileStat->uncompressedSize, 4);
     uint16_t nameLen, m, k;
-    file.read(&nameLen, 2);
-    file.read(&m, 2);
-    file.read(&k, 2);
-    file.seekCur(8);
-    file.read(&fileStat->localHeaderOffset, 4);
+    if (!file.seekCur(6) || !readExact(&fileStat->method, 2) || !file.seekCur(8) ||
+        !readExact(&fileStat->compressedSize, 4) || !readExact(&fileStat->uncompressedSize, 4) ||
+        !readExact(&nameLen, 2) || !readExact(&m, 2) || !readExact(&k, 2) || !file.seekCur(8) ||
+        !readExact(&fileStat->localHeaderOffset, 4))
+      return false;
 
     if (nameLen < 256) {
-      file.read(itemName, nameLen);
+      if (!readExact(itemName, nameLen)) return false;
       itemName[nameLen] = '\0';
 
       if (strcmp(itemName, filename) == 0) {
         // Found it! Update cursor to next entry
-        file.seekCur(m + k);
+        if (!file.seekCur(m + k)) return false;
         lastCentralDirPos = file.position();
         lastCentralDirPosValid = true;
         found = true;
@@ -178,11 +194,11 @@ bool ZipFile::loadFileStatSlim(const char* filename, FileStatSlim* fileStat) {
       }
     } else {
       // Name too long, skip it
-      file.seekCur(nameLen);
+      if (!file.seekCur(nameLen)) return false;
     }
 
     // Skip extra field + comment
-    file.seekCur(m + k);
+    if (!file.seekCur(m + k)) return false;
   }
 
   return found;
@@ -197,10 +213,7 @@ long ZipFile::getDataOffset(const FileStatSlim& fileStat) {
   uint8_t pLocalHeader[localHeaderSize];
   const uint64_t fileOffset = fileStat.localHeaderOffset;
 
-  file.seek(fileOffset);
-  const size_t read = file.read(pLocalHeader, localHeaderSize);
-
-  if (read != localHeaderSize) {
+  if (!file.seek(fileOffset) || !readExact(pLocalHeader, localHeaderSize)) {
     LOG_ERR("ZIP", "Something went wrong reading the local header");
     return -1;
   }
@@ -239,8 +252,10 @@ bool ZipFile::loadZipDetails() {
     return false;
   }
 
-  file.seek(fileSize - scanRange);
-  file.read(buffer, scanRange);
+  if (!file.seek(fileSize - scanRange) || !readExact(buffer, scanRange)) {
+    free(buffer);
+    return false;
+  }
 
   // Scan backwards for the signature
   int foundOffset = -1;
@@ -307,7 +322,7 @@ int ZipFile::fillUncompressedSizes(std::deque<SizeTarget>& targets, std::deque<u
 
   if (!loadZipDetails()) return 0;
 
-  file.seek(zipDetails.centralDirOffset);
+  if (!file.seek(zipDetails.centralDirOffset)) return 0;
 
   int matched = 0;
   const int targetCount = static_cast<int>(targets.size());
@@ -315,26 +330,20 @@ int ZipFile::fillUncompressedSizes(std::deque<SizeTarget>& targets, std::deque<u
   char itemName[256];
 
   while (file.available()) {
-    file.read(&sig, 4);
+    if (!readExact(&sig, 4)) return matched;
     if (sig != 0x02014b50) break;
 
-    file.seekCur(6);
     uint16_t method;
-    file.read(&method, 2);
-    file.seekCur(8);
     uint32_t compressedSize, uncompressedSize;
-    file.read(&compressedSize, 4);
-    file.read(&uncompressedSize, 4);
     uint16_t nameLen, m, k;
-    file.read(&nameLen, 2);
-    file.read(&m, 2);
-    file.read(&k, 2);
-    file.seekCur(8);
     uint32_t localHeaderOffset;
-    file.read(&localHeaderOffset, 4);
+    if (!file.seekCur(6) || !readExact(&method, 2) || !file.seekCur(8) || !readExact(&compressedSize, 4) ||
+        !readExact(&uncompressedSize, 4) || !readExact(&nameLen, 2) || !readExact(&m, 2) || !readExact(&k, 2) ||
+        !file.seekCur(8) || !readExact(&localHeaderOffset, 4))
+      return matched;
 
     if (nameLen < 256) {
-      file.read(itemName, nameLen);
+      if (!readExact(itemName, nameLen)) return matched;
       itemName[nameLen] = '\0';
 
       uint64_t hash = fnvHash64(itemName, nameLen);
@@ -356,10 +365,10 @@ int ZipFile::fillUncompressedSizes(std::deque<SizeTarget>& targets, std::deque<u
         break;
       }
     } else {
-      file.seekCur(nameLen);
+      if (!file.seekCur(nameLen)) return matched;
     }
 
-    file.seekCur(m + k);
+    if (!file.seekCur(m + k)) return matched;
   }
 
   return matched;
@@ -375,7 +384,7 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
   const long fileOffset = getDataOffset(fileStat);
   if (fileOffset < 0) return nullptr;
 
-  file.seek(fileOffset);
+  if (!file.seek(fileOffset)) return nullptr;
 
   const auto deflatedDataSize = fileStat.compressedSize;
   const auto inflatedDataSize = fileStat.uncompressedSize;
@@ -388,9 +397,7 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
 
   if (fileStat.method == ZIP_METHOD_STORED) {
     // no deflation, just read content
-    const size_t dataRead = file.read(data, inflatedDataSize);
-
-    if (dataRead != inflatedDataSize) {
+    if (!readExact(data, inflatedDataSize)) {
       LOG_ERR("ZIP", "Failed to read data");
       free(data);
       return nullptr;
@@ -406,10 +413,7 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
       return nullptr;
     }
 
-    const size_t dataRead = file.read(deflatedData, deflatedDataSize);
-
-    if (dataRead != deflatedDataSize) {
-      LOG_ERR("ZIP", "Failed to read data, expected %d got %d", deflatedDataSize, dataRead);
+    if (!readExact(deflatedData, deflatedDataSize)) {
       free(deflatedData);
       free(data);
       return nullptr;
@@ -443,6 +447,10 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
 }
 
 bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t chunkSize, const bool allowEarlyStop) {
+  if (chunkSize == 0) {
+    LOG_ERR("ZIP", "Stream chunk size must be positive");
+    return false;
+  }
   const ScopedOpenClose zip{*this};
   if (!zip) return false;
 
@@ -452,7 +460,7 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
   const long fileOffset = getDataOffset(fileStat);
   if (fileOffset < 0) return false;
 
-  file.seek(fileOffset);
+  if (!file.seek(fileOffset)) return false;
   const auto deflatedDataSize = fileStat.compressedSize;
   const auto inflatedDataSize = fileStat.uncompressedSize;
 
@@ -466,12 +474,14 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
 
     size_t remaining = inflatedDataSize;
     while (remaining > 0) {
-      const size_t dataRead = file.read(buffer, remaining < chunkSize ? remaining : chunkSize);
-      if (dataRead == 0) {
+      const int readResult = file.read(buffer, remaining < chunkSize ? remaining : chunkSize);
+      if (readResult <= 0) {
         LOG_ERR("ZIP", "Could not read more bytes");
         free(buffer);
         return false;
       }
+
+      const size_t dataRead = static_cast<size_t>(readResult);
 
       if (out.write(buffer, dataRead) != dataRead) {
         free(buffer);
@@ -595,7 +605,7 @@ bool ZipFile::readFilePrefixToBuffer(const char* filename, uint8_t* out, const s
   const long fileOffset = getDataOffset(fileStat);
   if (fileOffset < 0) return false;
 
-  file.seek(fileOffset);
+  if (!file.seek(fileOffset)) return false;
   const auto deflatedDataSize = fileStat.compressedSize;
   const auto inflatedDataSize = fileStat.uncompressedSize;
   size_t copied = 0;
@@ -604,11 +614,12 @@ bool ZipFile::readFilePrefixToBuffer(const char* filename, uint8_t* out, const s
     const size_t toRead = std::min<size_t>(maxBytes, inflatedDataSize);
     size_t remaining = toRead;
     while (remaining > 0) {
-      const size_t dataRead = file.read(out + copied, remaining);
-      if (dataRead == 0) {
+      const int readResult = file.read(out + copied, remaining);
+      if (readResult <= 0) {
         LOG_ERR("ZIP", "Could not read stored file prefix");
         return false;
       }
+      const size_t dataRead = static_cast<size_t>(readResult);
       copied += dataRead;
       remaining -= dataRead;
     }

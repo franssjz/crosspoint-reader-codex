@@ -1,5 +1,7 @@
 #pragma once
 
+#include <FileIndex.h>
+
 #include <functional>
 #include <string>
 
@@ -18,8 +20,14 @@ class BmpViewerActivity final : public Activity {
  private:
   void loadSiblingImages();
   void doSetSleepCover();
+  bool renderPngImage();
+  void drawImageError();
+  void goToSibling(size_t index);
 
   std::string filePath;
-  std::vector<std::string> siblingImages;
+  FileIndex siblingIndex;
+  std::unique_ptr<FileIndex::Entry> siblingEntry;
+  size_t siblingCount = 0;
+  bool imageLoaded = false;
   int currentImageIndex = -1;
 };

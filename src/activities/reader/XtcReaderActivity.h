@@ -12,14 +12,15 @@
 #include <string>
 #include <utility>
 
-#include "activities/Activity.h"
 #include "EndOfBookOptions.h"
+#include "activities/Activity.h"
 
 class XtcReaderActivity final : public Activity {
   std::shared_ptr<Xtc> xtc;
   std::string stableBookId;
 
   uint32_t currentPage = 0;
+  bool exitingReader = false;
   int pagesUntilFullRefresh = 0;
   bool pendingForceFullRefresh = false;
   bool waitingForConfirmSecondClick = false;
@@ -33,11 +34,12 @@ class XtcReaderActivity final : public Activity {
     std::string title;
   };
 
-  void renderPage();
+  bool renderPage(uint32_t pageToRender);
   void renderStatusBarOverlay(StatusBarOverlayPosition position) const;
   StatusBarInfo getStatusBarInfo() const;
-  void saveProgress() const;
+  void saveProgress(uint32_t pageToSave, bool updateStats = true) const;
   void loadProgress();
+  bool progressPersistenceBlocked = false;
   void requestCurrentPageFullRefresh();
   std::string moveCompletedBookIfEnabled();
   void exitReaderAfterOptionalCompletedMove();

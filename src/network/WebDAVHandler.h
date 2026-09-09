@@ -3,6 +3,8 @@
 #include <HalStorage.h>
 #include <WebServer.h>
 
+#include "WebUploadTransaction.h"
+
 class WebDAVHandler : public RequestHandler {
  public:
   // RequestHandler interface
@@ -15,6 +17,8 @@ class WebDAVHandler : public RequestHandler {
   // PUT streaming state (raw() is called in chunks)
   FsFile _putFile;
   String _putPath;
+  WebUploadTransaction _putTransaction;
+  size_t _putReceived = 0;
   bool _putOk = false;
   bool _putExisted = false;
 

@@ -61,6 +61,7 @@ class TxtReaderActivity final : public Activity {
   void savePageIndexCache() const;
   void saveProgress() const;
   void loadProgress();
+  bool progressPersistenceBlocked = false;
   bool skipPages(int amount);
   bool isAtEndOfBook() const { return initialized && currentPage >= totalPages; }
   void requestCurrentPageFullRefresh();

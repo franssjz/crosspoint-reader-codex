@@ -50,6 +50,10 @@ const std::vector<ReaderQuickSettingsActivity::QuickSetting>& ReaderQuickSetting
        QuickSettingType::Enum,
        &CrossPointSettings::lineSpacing,
        {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE, StrId::STR_EXTRA_WIDE}},
+      {StrId::STR_WORD_SPACING,
+       QuickSettingType::Enum,
+       &CrossPointSettings::wordSpacing,
+       {StrId::STR_NORMAL, StrId::STR_NUM_1, StrId::STR_NUM_2, StrId::STR_NUM_3, StrId::STR_NUM_4}},
       {StrId::STR_SCREEN_MARGIN, QuickSettingType::Value, &CrossPointSettings::screenMargin, {}, {5, 40, 5}},
       {StrId::STR_PARA_ALIGNMENT,
        QuickSettingType::Enum,
@@ -85,10 +89,16 @@ const std::vector<ReaderQuickSettingsActivity::QuickSetting>& ReaderQuickSetting
   return quickSettings;
 }
 
-std::string ReaderQuickSettingsActivity::getSettingName(const int index) { return I18N.get(settings()[index].nameId); }
+std::string ReaderQuickSettingsActivity::getSettingName(const int index) {
+  if (scopeRows() && index == 0) return tr(STR_READER_SETTING_SCOPE);
+  return I18N.get(settings()[index - scopeRows()].nameId);
+}
 
 std::string ReaderQuickSettingsActivity::getSettingValue(const int index) {
-  const auto& setting = settings()[index];
+  if (scopeRows() && index == 0) {
+    return SETTINGS.usesBookReaderSettings() ? tr(STR_THIS_BOOK) : tr(STR_GLOBAL_DEFAULTS);
+  }
+  const auto& setting = settings()[index - scopeRows()];
   if (setting.type == QuickSettingType::FontFamily) {
     return fontFamilyText();
   }
@@ -134,18 +144,33 @@ void ReaderQuickSettingsActivity::applyImmediateRendererSetting(const QuickSetti
 void ReaderQuickSettingsActivity::onEnter() {
   Activity::onEnter();
   selectedIndex = 0;
+  saveFailed = false;
   requestUpdate();
 }
 
 void ReaderQuickSettingsActivity::toggleSelectedSetting() {
-  const auto& setting = settings()[selectedIndex];
+  saveFailed = false;
+  if (scopeRows() && selectedIndex == 0) {
+    if (!SETTINGS.setBookReaderSettingsEnabled(!SETTINGS.usesBookReaderSettings())) {
+      saveFailed = true;
+      // Leave both scopes unchanged if the profile could not be saved/read.
+      return;
+    }
+    ensureSdFontLoaded();
+    renderer.setDarkMode(SETTINGS.darkMode);
+    renderer.setFadingFix(SETTINGS.fadingFix);
+    renderer.setTextDarkness(SETTINGS.textDarkness);
+    renderer.requestNextFullRefresh();
+    return;
+  }
+  const auto& setting = settings()[selectedIndex - scopeRows()];
 
   if (setting.type == QuickSettingType::FontFamily) {
     sdFontSystem.refreshIfDirty();
     startActivityForResult(std::make_unique<FontSelectionActivity>(renderer, mappedInput, &sdFontSystem.registry()),
                            [this](const ActivityResult&) {
                              ensureSdFontLoaded();
-                             SETTINGS.saveToFile();
+                             saveFailed = !SETTINGS.saveToFile();
                              requestUpdate(true);
                            });
     return;
@@ -174,7 +199,7 @@ void ReaderQuickSettingsActivity::toggleSelectedSetting() {
   }
 
   applyImmediateRendererSetting(setting);
-  SETTINGS.saveToFile();
+  saveFailed = !SETTINGS.saveToFile();
 }
 
 void ReaderQuickSettingsActivity::loop() {
@@ -189,7 +214,7 @@ void ReaderQuickSettingsActivity::loop() {
     return;
   }
 
-  const int settingCount = static_cast<int>(settings().size());
+  const int settingCount = static_cast<int>(settings().size()) + scopeRows();
   const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, false);
 
   buttonNavigator.onNextRelease([this, settingCount] {
@@ -222,12 +247,13 @@ void ReaderQuickSettingsActivity::render(RenderLock&&) {
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
 
-  HeaderDateUtils::drawHeaderWithDate(renderer, tr(STR_CAT_READER), tr(STR_SETTINGS_TITLE));
+  HeaderDateUtils::drawHeaderWithDate(
+      renderer, tr(STR_CAT_READER), I18N.get(saveFailed ? StrId::STR_SETTINGS_SAVE_FAILED : StrId::STR_SETTINGS_TITLE));
 
   GUI.drawList(
-      renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(settings().size()), selectedIndex,
-      [](const int index) { return getSettingName(index); }, nullptr, [](const int) { return UIIcon::Settings; },
-      [](const int index) { return getSettingValue(index); }, true);
+      renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(settings().size()) + scopeRows(),
+      selectedIndex, [](const int index) { return getSettingName(index); }, nullptr,
+      [](const int) { return UIIcon::Settings; }, [](const int index) { return getSettingValue(index); }, true);
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_TOGGLE), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

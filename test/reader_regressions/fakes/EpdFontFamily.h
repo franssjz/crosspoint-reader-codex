@@ -13,6 +13,7 @@ class EpdFontFamily {
     STRIKETHROUGH = 8,
     SUP = 16,
     SUB = 32,
-    RUBY_CONTINUE = 64,
+    SMALL_CAPS = 64,
+    RUBY_CONTINUE = 128,
   };
 };

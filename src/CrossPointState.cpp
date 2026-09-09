@@ -81,6 +81,7 @@ bool CrossPointState::saveToFile() {
 }
 
 bool CrossPointState::loadFromFile() {
+  JsonSettingsIO::recoverFile(STATE_FILE_JSON);
   const std::string tempPath = std::string(STATE_FILE_JSON) + ".tmp";
   if (!Storage.exists(STATE_FILE_JSON) && Storage.exists(tempPath.c_str())) {
     if (Storage.rename(tempPath.c_str(), STATE_FILE_JSON)) {

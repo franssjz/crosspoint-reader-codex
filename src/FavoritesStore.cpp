@@ -107,8 +107,7 @@ bool FavoritesStore::addBook(const std::string& path, const std::string& title, 
     return false;
   }
 
-  const std::string resolvedBookId =
-      !bookId.empty() ? bookId : BookIdentity::resolveStableBookId(normalizedPath);
+  const std::string resolvedBookId = !bookId.empty() ? bookId : BookIdentity::resolveStableBookId(normalizedPath);
   const int existingIndex = findBookIndex(normalizedPath, resolvedBookId);
   if (existingIndex >= 0) {
     auto& existing = favoriteBooks[existingIndex];
@@ -164,7 +163,8 @@ bool FavoritesStore::updateBookPath(const std::string& oldKey, const std::string
   }
 
   const std::string resolvedBookId =
-      !bookId.empty() ? bookId : (!normalizedNewPath.empty() ? BookIdentity::resolveStableBookId(normalizedNewPath) : "");
+      !bookId.empty() ? bookId
+                      : (!normalizedNewPath.empty() ? BookIdentity::resolveStableBookId(normalizedNewPath) : "");
   const int existingIndex = findBookIndex(oldKey, resolvedBookId);
   if (existingIndex < 0) {
     return false;
@@ -247,6 +247,7 @@ FavoriteBook FavoritesStore::getDataFromBook(std::string path) const {
 }
 
 bool FavoritesStore::loadFromFile() {
+  JsonSettingsIO::recoverFile(FAVORITES_FILE_JSON);
   const std::string tempPath = std::string(FAVORITES_FILE_JSON) + ".tmp";
   if (!Storage.exists(FAVORITES_FILE_JSON) && Storage.exists(tempPath.c_str())) {
     if (Storage.rename(tempPath.c_str(), FAVORITES_FILE_JSON)) {

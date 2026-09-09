@@ -5,6 +5,7 @@
 #include <Logging.h>
 #include <esp_task_wdt.h>
 
+#include "WebPathUtils.h"
 #include "util/BookCacheUtils.h"
 
 namespace {
@@ -47,6 +48,9 @@ bool WebDAVHandler::canRaw(WebServer& server, const String& uri) {
 void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
   (void)uri;
   if (raw.status == RAW_START) {
+    _putTransaction.cancel(_putFile);
+    _putOk = false;
+    _putReceived = 0;
     _putPath = getRequestPath(server);
     if (isProtectedPath(_putPath)) {
       _putOk = false;
@@ -63,60 +67,44 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
       }
     }
 
-    if (_putFile) _putFile.close();
+    _putOk = _putTransaction.begin(_putPath, _putFile);
     _putExisted = Storage.exists(_putPath.c_str());
-
-    if (_putExisted) {
-      FsFile existing = Storage.open(_putPath.c_str());
-      if (existing && existing.isDirectory()) {
-        existing.close();
-        _putOk = false;
-        return;
-      }
-      if (existing) existing.close();
-    }
-
-    // Write to a temp file to avoid destroying the original on failed upload
-    String tempPath = _putPath + ".davtmp";
-    Storage.remove(tempPath.c_str());
-    _putOk = Storage.openFileForWrite("DAV", tempPath, _putFile);
     LOG_DBG("DAV", "PUT START: %s", _putPath.c_str());
 
   } else if (raw.status == RAW_WRITE) {
     if (_putFile && _putOk) {
       esp_task_wdt_reset();
       size_t written = _putFile.write(raw.buf, raw.currentSize);
+      _putReceived += written;
       if (written != raw.currentSize) {
         _putOk = false;
+        _putTransaction.cancel(_putFile);
       }
     }
 
   } else if (raw.status == RAW_END) {
-    if (_putFile) _putFile.close();
     if (_putOk) {
-      String tempPath = _putPath + ".davtmp";
-      if (_putExisted) Storage.remove(_putPath.c_str());
-      FsFile tmp = Storage.open(tempPath.c_str());
-      if (tmp) {
-        _putOk = tmp.rename(_putPath.c_str());
-        tmp.close();
-      } else {
-        _putOk = false;
-      }
-      if (!_putOk) Storage.remove(tempPath.c_str());
+      _putOk = _putReceived == raw.totalSize && _putTransaction.finish(_putFile, _putReceived);
     }
+    if (!_putOk) _putTransaction.cancel(_putFile);
     LOG_DBG("DAV", "PUT END: %u bytes, ok=%d", raw.totalSize, _putOk);
 
   } else if (raw.status == RAW_ABORTED) {
-    if (_putFile) _putFile.close();
-    String tempPath = _putPath + ".davtmp";
-    Storage.remove(tempPath.c_str());
+    // A rejected START owns no temp file. Never remove a path constructed from
+    // that untrusted request during a subsequent ABORT callback.
+    _putTransaction.cancel(_putFile);
     _putOk = false;
   }
 }
 
 bool WebDAVHandler::handle(WebServer& server, HTTPMethod method, const String& uri) {
   (void)uri;
+  // PROPFIND/LOCK must validate paths too; raw PUT is independently checked
+  // before any file is opened. OPTIONS does not access storage.
+  if (method != HTTP_OPTIONS && isProtectedPath(getRequestPath(server))) {
+    server.send(403, "text/plain", "Invalid or protected path");
+    return true;
+  }
   switch (method) {
     case HTTP_OPTIONS:
       handleOptions(server);
@@ -379,8 +367,6 @@ void WebDAVHandler::handlePut(WebServer& s) {
   }
 
   if (!_putOk) {
-    String tempPath = path + ".davtmp";
-    Storage.remove(tempPath.c_str());
     s.send(500, "text/plain", "Write failed - incomplete upload or disk full");
     return;
   }
@@ -681,24 +667,7 @@ void WebDAVHandler::handleUnlock(WebServer& s) {
 
 // ── Utility functions ────────────────────────────────────────────────────────
 
-String WebDAVHandler::getRequestPath(WebServer& s) const {
-  String uri = s.uri();
-  String decoded = WebServer::urlDecode(uri);
-
-  // Normalize using FsHelpers
-  std::string normalized = FsHelpers::normalisePath(decoded.c_str());
-  String result = normalized.c_str();
-
-  if (result.isEmpty()) return "/";
-  if (!result.startsWith("/")) result = "/" + result;
-
-  // Remove trailing slash unless root
-  if (result.length() > 1 && result.endsWith("/")) {
-    result = result.substring(0, result.length() - 1);
-  }
-
-  return result;
-}
+String WebDAVHandler::getRequestPath(WebServer& s) const { return WebPathUtils::normalize(s.uri(), true); }
 
 String WebDAVHandler::getDestinationPath(WebServer& s) const {
   String dest = s.header("Destination");
@@ -716,19 +685,7 @@ String WebDAVHandler::getDestinationPath(WebServer& s) const {
     }
   }
 
-  String decoded = WebServer::urlDecode(dest);
-  std::string normalized = FsHelpers::normalisePath(decoded.c_str());
-  String result = normalized.c_str();
-
-  if (result.isEmpty()) return "/";
-  if (!result.startsWith("/")) result = "/" + result;
-
-  // Remove trailing slash unless root
-  if (result.length() > 1 && result.endsWith("/")) {
-    result = result.substring(0, result.length() - 1);
-  }
-
-  return result;
+  return WebPathUtils::normalize(dest, true);
 }
 
 void WebDAVHandler::urlEncodePath(const String& path, String& out) const {
@@ -758,31 +715,7 @@ void WebDAVHandler::urlEncodePath(const String& path, String& out) const {
   }
 }
 
-bool WebDAVHandler::isProtectedPath(const String& path) const {
-  // Check every segment of the path, not just the last one.
-  // This prevents access to e.g. /.hidden/somefile or /System Volume Information/foo
-  int start = 0;
-  while (start < (int)path.length()) {
-    if (path.charAt(start) == '/') {
-      start++;
-      continue;
-    }
-    int end = path.indexOf('/', start);
-    if (end == -1) end = path.length();
-
-    String segment = path.substring(start, end);
-
-    if (segment.startsWith(".")) return true;
-
-    for (const auto* item : HIDDEN_ITEMS) {
-      if (segment.equals(item)) return true;
-    }
-
-    start = end + 1;
-  }
-
-  return false;
-}
+bool WebDAVHandler::isProtectedPath(const String& path) const { return WebPathUtils::isProtected(path); }
 
 int WebDAVHandler::getDepth(WebServer& s) const {
   String depth = s.header("Depth");

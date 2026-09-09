@@ -1,5 +1,7 @@
 #pragma once
 
+#include <FileIndex.h>
+
 #include <functional>
 #include <memory>
 #include <string>
@@ -11,8 +13,9 @@
 
 class FileBrowserActivity final : public Activity {
  public:
-  // Books = standard reader browser; PickFirmware = filter to .bin only and return path via ActivityResult.
-  enum class Mode { Books, PickFirmware };
+  // PickFile returns a supported book/image; PickFirmware only returns .bin.
+  // Both pickers preserve navigation and disable the delete action.
+  enum class Mode { Books, PickFirmware, PickFile };
 
  private:
   // Deletion
@@ -31,13 +34,28 @@ class FileBrowserActivity final : public Activity {
 
   // Files state
   std::string basepath = "/";
-  std::vector<std::string> files;
-  std::vector<uint8_t> completedFileStates;
+  FileIndex fileIndex;
+  struct VisibleEntry {
+    char name[FileIndex::MAX_NAME + 2] = {};
+    bool completed = false;
+  };
+  std::unique_ptr<VisibleEntry[]> visibleEntries;
+  std::unique_ptr<FileIndex::Entry> indexEntry;
+  size_t windowCapacity = 0;
+  size_t windowFirst = SIZE_MAX;
+  size_t windowCount = 0;
+  size_t fileCount = 0;
+  enum class ListingError { None, Directory, Index, Memory };
+  ListingError listingError = ListingError::None;
   std::unique_ptr<char[]> fileNameBuffer;
 
   // Data loading
   void loadFiles();
-  size_t findEntry(const std::string& name) const;
+  size_t findEntry(const std::string& name);
+  bool loadVisibleWindow();
+  void setSelection(size_t row);
+  const char* visibleName(size_t row) const;
+  bool visibleCompleted(size_t row) const;
 
  public:
   explicit FileBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string initialPath = "/",

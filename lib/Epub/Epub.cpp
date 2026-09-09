@@ -267,6 +267,7 @@ void Epub::parseCssFiles() const {
       LOG_ERR("EBP", "Insufficient heap for CSS parsing (%u free, %u max alloc, need %zu/%zu), skipping: %s",
               heap.freeHeap, heap.maxAllocHeap, MIN_HEAP_FOR_CSS_PARSING, MIN_MAX_ALLOC_FOR_CSS_PARSING,
               cssPath.c_str());
+      cssParser->markIncomplete();
       continue;
     }
 
@@ -276,6 +277,7 @@ void Epub::parseCssFiles() const {
       if (cssFileSize > MAX_CSS_FILE_SIZE) {
         LOG_ERR("EBP", "CSS file too large (%zu bytes > %zu max), skipping: %s", cssFileSize, MAX_CSS_FILE_SIZE,
                 cssPath.c_str());
+        cssParser->markIncomplete();
         continue;
       }
     }
@@ -285,6 +287,7 @@ void Epub::parseCssFiles() const {
     FsFile tempCssFile;
     if (!Storage.openFileForWrite("EBP", tmpCssPath, tempCssFile)) {
       LOG_ERR("EBP", "Could not create temp CSS file");
+      cssParser->markIncomplete();
       continue;
     }
     if (!readItemContentsToStream(cssPath, tempCssFile, 1024)) {
@@ -292,18 +295,24 @@ void Epub::parseCssFiles() const {
       // Explicitly close() file before calling Storage.remove()
       tempCssFile.close();
       Storage.remove(tmpCssPath.c_str());
+      cssParser->markIncomplete();
       continue;
     }
     // Explicitly close() file before reopening for reading
-    tempCssFile.close();
+    if (!tempCssFile.close()) {
+      cssParser->markIncomplete();
+      Storage.remove(tmpCssPath.c_str());
+      continue;
+    }
 
     // Parse the CSS file
     if (!Storage.openFileForRead("EBP", tmpCssPath, tempCssFile)) {
       LOG_ERR("EBP", "Could not open temp CSS file for reading");
       Storage.remove(tmpCssPath.c_str());
+      cssParser->markIncomplete();
       continue;
     }
-    cssParser->loadFromStream(tempCssFile);
+    if (!cssParser->loadFromStream(tempCssFile)) cssParser->markIncomplete();
     // Explicitly close() file before calling Storage.remove()
     tempCssFile.close();
     Storage.remove(tmpCssPath.c_str());
@@ -312,10 +321,12 @@ void Epub::parseCssFiles() const {
   // Save to cache for next time
   if (!cssParser->saveToCache()) {
     LOG_ERR("EBP", "Failed to save CSS rules to cache");
+    cssParser->markIncomplete();
+  } else {
+    cssParser->clear();
   }
 
   LOG_DBG("EBP", "Loaded %zu CSS style rules from %zu files", cssParser->ruleCount(), cssFiles.size());
-  cssParser->clear();
 }
 
 // load in the meta data for the epub file

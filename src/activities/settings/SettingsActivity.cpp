@@ -21,6 +21,7 @@
 #include "FontDownloadActivity.h"
 #include "FontSelectionActivity.h"
 #include "KOReaderSettingsActivity.h"
+#include "KeyboardLayoutsActivity.h"
 #include "LanguageSelectActivity.h"
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
@@ -129,6 +130,7 @@ const std::vector<SettingInfo>& getDeviceControlsSettings() {
   static const std::vector<SettingInfo> settings = [] {
     std::vector<SettingInfo> result = {
         SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons),
+        SettingInfo::Action(StrId::STR_KEYBOARD_LAYOUTS, SettingAction::KeyboardLayouts),
         SettingInfo::Enum(StrId::STR_SIDE_BTN_LAYOUT, &CrossPointSettings::sideButtonLayout,
                           {StrId::STR_PREV_NEXT, StrId::STR_NEXT_PREV}),
         SettingInfo::Toggle(StrId::STR_FRONT_BTN_FOLLOW_ORIENTATION, &CrossPointSettings::frontButtonFollowOrientation),
@@ -137,7 +139,7 @@ const std::vector<SettingInfo>& getDeviceControlsSettings() {
                            StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION}),
         SettingInfo::Enum(StrId::STR_SHORT_PWR_BTN, &CrossPointSettings::shortPwrBtn,
                           {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_PAGE_TURN, StrId::STR_FORCE_REFRESH,
-                           StrId::STR_TOGGLE_STATUS_BAR}),
+                           StrId::STR_TOGGLE_STATUS_BAR, StrId::STR_QUICK_LOCK}),
     };
     if (halTiltSensor.isAvailable()) {
       result.push_back(SettingInfo::Enum(StrId::STR_TILT_PAGE_TURN, &CrossPointSettings::tiltPageTurn,
@@ -667,6 +669,9 @@ void SettingsActivity::toggleCurrentSetting() {
     auto resultHandler = [this](const ActivityResult&) { SETTINGS.saveToFile(); };
 
     switch (setting.action) {
+      case SettingAction::KeyboardLayouts:
+        startActivityForResult(std::make_unique<KeyboardLayoutsActivity>(renderer, mappedInput), resultHandler);
+        break;
       case SettingAction::RemapFrontButtons:
         startActivityForResult(std::make_unique<ButtonRemapActivity>(renderer, mappedInput), resultHandler);
         break;

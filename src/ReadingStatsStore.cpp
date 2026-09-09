@@ -1755,6 +1755,7 @@ bool ReadingStatsStore::saveToFile() const {
 }
 
 bool ReadingStatsStore::loadFromFile() {
+  JsonSettingsIO::recoverFile(READING_STATS_FILE_JSON);
   const std::string tempPath = std::string(READING_STATS_FILE_JSON) + ".tmp";
   if (!Storage.exists(READING_STATS_FILE_JSON) && Storage.exists(tempPath.c_str())) {
     if (Storage.rename(tempPath.c_str(), READING_STATS_FILE_JSON)) {

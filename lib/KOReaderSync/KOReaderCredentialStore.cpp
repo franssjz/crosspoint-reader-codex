@@ -60,6 +60,7 @@ bool KOReaderCredentialStore::saveToFile() const {
 }
 
 bool KOReaderCredentialStore::loadFromFile() {
+  JsonSettingsIO::recoverFile(KOREADER_PROFILES_FILE_JSON);
   const std::string tempPath = std::string(KOREADER_PROFILES_FILE_JSON) + ".tmp";
   if (!Storage.exists(KOREADER_PROFILES_FILE_JSON) && Storage.exists(tempPath.c_str())) {
     if (Storage.rename(tempPath.c_str(), KOREADER_PROFILES_FILE_JSON)) {
@@ -184,9 +185,7 @@ const std::string& KOReaderCredentialStore::getPassword() const {
   return activeIndex >= 0 ? profiles[static_cast<size_t>(activeIndex)].password : kEmptyString;
 }
 
-std::string KOReaderCredentialStore::getMd5Password() const {
-  return hashPassword(getPassword());
-}
+std::string KOReaderCredentialStore::getMd5Password() const { return hashPassword(getPassword()); }
 
 std::string KOReaderCredentialStore::hashPassword(const std::string& password) {
   if (password.empty()) {
@@ -237,9 +236,7 @@ const std::string& KOReaderCredentialStore::getServerUrl() const {
   return activeIndex >= 0 ? profiles[static_cast<size_t>(activeIndex)].serverUrl : kEmptyString;
 }
 
-std::string KOReaderCredentialStore::getBaseUrl() const {
-  return resolveBaseUrl(getServerUrl());
-}
+std::string KOReaderCredentialStore::getBaseUrl() const { return resolveBaseUrl(getServerUrl()); }
 
 std::string KOReaderCredentialStore::resolveBaseUrl(const std::string& serverUrl) {
   std::string url;

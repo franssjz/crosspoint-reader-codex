@@ -145,4 +145,17 @@ typedef struct {
   /// Optional RAM-only coverage query for fonts whose active interval table is
   /// only a resident subset (SD-card fonts). Shares glyphMissCtx.
   bool (*coverageHandler)(void* ctx, uint32_t codepoint);
+
+  // Optional built-in representation, appended so existing generated font
+  // initializers and the dense .cpfont reader retain their field order.
+  // Split maps keep the binary search on naturally aligned codepoints.
+  const uint16_t* kernLeftCodepoints;
+  const uint8_t* kernLeftClassIds;
+  const uint16_t* kernRightCodepoints;
+  const uint8_t* kernRightClassIds;
+  // Row l occupies [rowOffsets[l], rowOffsets[l+1]); columns are sorted,
+  // zero-based, and values retain exactly the dense matrix's 4.4 precision.
+  const uint16_t* kernRowOffsets;
+  const uint8_t* kernSparseCols;
+  const int8_t* kernSparseValues;
 } EpdFontData;

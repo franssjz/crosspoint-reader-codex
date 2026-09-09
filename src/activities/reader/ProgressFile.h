@@ -7,7 +7,16 @@
 #include <cstdint>
 #include <string>
 
+#include "util/AtomicFileReplace.h"
+
 namespace ProgressFile {
+
+inline bool recover(const std::string& path) {
+  if (path.empty()) return true;
+  const std::string previous = path + ".previous";
+  if (!Storage.exists(previous.c_str())) return true;
+  return AtomicFileReplace::recover(Storage, path.c_str(), previous.c_str());
+}
 
 inline bool writeAtomicPath(const char* moduleName, const std::string& finalPath, const uint8_t* data, size_t len) {
   const std::string tmpPath = finalPath + ".tmp";
@@ -29,13 +38,12 @@ inline bool writeAtomicPath(const char* moduleName, const std::string& finalPath
     }
 
     file.flush();
-    file.close();
+    if (!file.close()) return false;
   }
 
-  Storage.remove(finalPath.c_str());
-  if (!Storage.rename(tmpPath.c_str(), finalPath.c_str())) {
+  const std::string previous = finalPath + ".previous";
+  if (!AtomicFileReplace::promote(Storage, tmpPath.c_str(), finalPath.c_str(), previous.c_str())) {
     LOG_ERR(moduleName, "Failed to rename temp progress into place: %s", finalPath.c_str());
-    Storage.remove(tmpPath.c_str());
     return false;
   }
 

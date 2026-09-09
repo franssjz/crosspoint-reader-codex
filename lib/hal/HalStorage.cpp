@@ -188,14 +188,29 @@ size_t HalFile::write(const void* buf, size_t count) { HAL_FILE_WRAPPED_CALL(wri
 size_t HalFile::write(uint8_t b) { HAL_FILE_WRAPPED_CALL(write, b); }
 bool HalFile::rename(const char* newPath) { HAL_FILE_WRAPPED_CALL(rename, newPath); }
 bool HalFile::isDirectory() const { HAL_FILE_FORWARD_CALL(isDirectory, ); }  // already thread-safe, no need to wrap
-void HalFile::rewindDirectory() { HAL_FILE_WRAPPED_CALL(rewindDirectory, ); }
+void HalFile::rewindDirectory() {
+  HalStorage::StorageLock lock;
+  assert(impl != nullptr);
+  impl->file.rewindDirectory();
+  allocationFailed_ = false;
+  // SdFat read-error bits are sticky. Reopen the directory to retry after an
+  // I/O failure; rewinding must not make an incomplete listing look complete.
+}
 bool HalFile::close() { HAL_FILE_WRAPPED_CALL(close, ); }
 HalFile HalFile::openNextFile() {
   HalStorage::StorageLock lock;
   assert(impl != nullptr);
+  allocationFailed_ = false;
+  iterationFailed_ = false;
   FsFile fsFile = impl->file.openNextFile();
+  if (!fsFile) {
+    iterationFailed_ = impl->file.getError() != 0;
+    if (iterationFailed_) LOG_ERR("HAL", "Directory iteration failed before EOF");
+    return {};
+  }
   auto nextImpl = std::unique_ptr<Impl>(new (std::nothrow) Impl(std::move(fsFile)));
   if (!nextImpl) {
+    allocationFailed_ = true;
     LOG_ERR("HAL", "Out of memory opening next directory entry");
     return {};
   }

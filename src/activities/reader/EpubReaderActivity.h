@@ -3,12 +3,15 @@
 #include <Epub/FootnoteEntry.h>
 #include <Epub/Section.h>
 
+#include <atomic>
 #include <optional>
 
 #include "BookmarkStore.h"
 #include "EndOfBookOptions.h"
 #include "EpubReaderMenuActivity.h"
+#include "ReaderSelectionPager.h"
 #include "activities/Activity.h"
+#include "util/PageTurnQueue.h"
 
 class Page;
 
@@ -43,6 +46,10 @@ class EpubReaderActivity final : public Activity {
   bool pendingScreenshot = false;
   bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
   bool automaticPageTurnActive = false;
+  PageTurnQueue pageTurnQueue;
+  std::atomic<bool> pageTurnAwaitingRender{false};
+  void runBackgroundBuild();
+  void drainPageTurnQueue();
   bool pendingForceFullRefresh = false;
   bool statusBarTemporarilyHidden = false;
   bool waitingForConfirmSecondClick = false;
@@ -51,6 +58,7 @@ class EpubReaderActivity final : public Activity {
   int sessionStartPage = 0;
   bool sessionProgressTouched = false;
   std::shared_ptr<Page> currentOverlayPageCache;
+  std::unique_ptr<ReaderSelectionPager> selectionPager;
   EndOfBookOptions endOfBookOptions;
   int currentOverlayPageSpineIndex = -1;
   int currentOverlayPageNumber = -1;
@@ -64,6 +72,7 @@ class EpubReaderActivity final : public Activity {
     uint8_t fontFamily = 0;
     uint8_t fontSize = 0;
     uint8_t lineSpacing = 0;
+    uint8_t wordSpacing = 0;
     uint8_t screenMargin = 0;
     uint8_t paragraphAlignment = 0;
     uint8_t embeddedStyle = 0;
@@ -103,7 +112,7 @@ class EpubReaderActivity final : public Activity {
   static constexpr size_t BACKGROUND_BUILD_MIN_FREE_HEAP = 32 * 1024;
   static constexpr size_t BACKGROUND_BUILD_MIN_MAX_ALLOC = 16 * 1024;
 
-  void renderContents(std::shared_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
+  bool renderContents(std::shared_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
   void drawTextHighlights(const Page& page, int orientedMarginTop, int orientedMarginLeft) const;
   void renderStatusBar() const;
@@ -113,6 +122,8 @@ class EpubReaderActivity final : public Activity {
   bool applyDeferredReposition();
   void clearDeferredReposition();
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
+  bool progressPersistenceBlocked = false;
+  bool suppressImportedProgressStats = false;
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);

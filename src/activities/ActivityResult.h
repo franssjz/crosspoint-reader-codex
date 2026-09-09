@@ -6,6 +6,7 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 struct WifiResult {
   bool connected = false;
@@ -43,10 +44,21 @@ struct BookmarkResult {
   uint32_t visibleTextOffset = 0;
 };
 
+struct HighlightFragment {
+  std::string text;
+  uint16_t spineIndex = 0;
+  uint16_t pageNumber = 0;
+  uint16_t startWordIndex = 0;
+  uint16_t endWordIndex = 0;
+  uint32_t visibleTextOffset = 0;
+};
+
 struct HighlightResult {
   std::string text;
   uint16_t startWordIndex = 0;
   uint16_t endWordIndex = 0;
+  // Multi-page selections persist as independently anchored v5 fragments.
+  std::vector<HighlightFragment> fragments;
 };
 
 struct SyncResult {
@@ -91,10 +103,9 @@ struct FlashcardSessionResult {
   int sessionCount = 0;
 };
 
-using ResultVariant =
-    std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult, PageResult,
-                 BookmarkResult, HighlightResult, SyncResult, NetworkModeResult, FootnoteResult, FilePathResult,
-                 FlashcardSessionResult>;
+using ResultVariant = std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult,
+                                   PageResult, BookmarkResult, HighlightResult, SyncResult, NetworkModeResult,
+                                   FootnoteResult, FilePathResult, FlashcardSessionResult>;
 
 struct ActivityResult {
   bool isCancelled = false;
